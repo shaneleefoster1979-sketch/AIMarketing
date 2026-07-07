@@ -36,6 +36,7 @@ marketing-skills/
     paid-ads.md
     lead-magnets.md
     content-strategy.md
+    seo-content.md
     affiliate-marketing.md
     analytics.md
 

@@ -58,3 +58,20 @@ local work via `git fetch` + `git reset --hard origin/<branch>` once the owner c
 manual push landed.
 
 Status: active
+
+## 2026-07-07 — Filled affiliate marketing gaps: SEO, link infra, program discovery, risk
+
+Context: Reviewed the affiliate marketing coverage for completeness and found five gaps: no
+SEO/organic-search playbook, no platform-specific affiliate ad compliance notes, no link
+infrastructure/tracking guidance, no guidance on finding affiliate programs/networks, and no
+platform/income risk diversification guidance.
+
+Decision/fact: Added `marketing-skills/playbooks/seo-content.md` (search intent
+classification, comparison-content structure, on-page basics, keyword/topic selection).
+Added a "Running affiliate links as paid traffic" section to `playbooks/paid-ads.md`
+(bridge pages, platform and network compliance). Added "Finding programs and networks,"
+"Link infrastructure and tracking," and "Platform and income risk" sections to
+`playbooks/affiliate-marketing.md`. Updated `SKILL.md` routing and README to reference
+`seo-content.md`.
+
+Status: active

@@ -35,6 +35,26 @@ Confirm these are already decided — ad copy can't fix a wrong answer to any of
 - **TikTok**: native, fast-cut, sound-on by default. Overtly "ad-like" production typically
   underperforms native-style content.
 
+## Running affiliate links as paid traffic
+
+Most platforms restrict bare affiliate links in ads, and most affiliate networks restrict
+which platforms/methods you can use — check both directions before spending anything:
+
+- **Platform side**: Google Ads and Meta both commonly disapprove or ban accounts for
+  direct-linking a raw affiliate URL. The standard fix is a **bridge/landing page you own**
+  in between — real content (a mini review, a comparison, added context) that then links to
+  the vendor, rather than the ad clicking straight through to an affiliate link.
+- **Network/vendor side**: many affiliate programs explicitly prohibit bidding on the
+  vendor's own brand name in search ads, prohibit certain ad platforms entirely, or require
+  specific disclosure language in the ad itself. Confirm the individual program's terms
+  before launching — this is separate from and in addition to platform policy.
+- **Cloaked/redirect links** (see `playbooks/affiliate-marketing.md`) should still point to
+  your own bridge page first when running paid traffic, both for compliance and because it
+  gives you a retargetable pixel/audience the bare vendor checkout won't.
+- Budget for the fact that a bridge page adds a step to the funnel — measure click-through
+  from ad → bridge page and bridge page → vendor link separately, so a drop can be
+  attributed to the right stage instead of blamed on the ad itself.
+
 ## Testing discipline
 
 - Change one variable per test (hook, creative format, audience, or offer) — testing multiple

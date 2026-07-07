@@ -39,6 +39,64 @@ Don't promote a product just because it pays well. Check, in this order:
 Reject offers that fail (1) even if they're strong on (2)–(4) — audience fit is the one thing
 that protects the long-term relationship.
 
+## Finding programs and networks
+
+Offers generally come from two sources, and they differ enough to affect which offers you can
+realistically access and how you get paid:
+
+- **Affiliate networks** (e.g. ShareASale, CJ, Impact, Awin, Amazon Associates) — a single
+  application gives access to many vendors' programs, with standardized (if sometimes
+  delayed) reporting and payout. Easiest starting point, but commission rates are often lower
+  than a direct relationship and payout terms are set by the network, not negotiable per-deal.
+- **Direct vendor/in-house programs** — apply directly to a specific brand's own affiliate
+  program. Often better commission rates and sometimes custom deals once you have a track
+  record, but you're dependent on that vendor's own tracking/payment reliability with no
+  network intermediary to fall back on if something goes wrong.
+
+When starting out, networks are the faster path to your first few offers; move higher-volume
+promotions to direct relationships once a program is proven to convert and you have leverage
+(traffic/results) to negotiate better terms.
+
+## Link infrastructure and tracking
+
+Bare affiliate links are fragile and hard to manage at any scale — set this up before you're
+promoting more than one or two offers:
+
+- **Use cloaked/redirect links** (e.g. `yoursite.com/go/product-name` redirecting to the real
+  affiliate URL) instead of pasting raw affiliate URLs into content and emails. This makes
+  links shorter and more trustworthy-looking, and — critically — lets you update the
+  destination in one place if a vendor changes their URL structure, rather than editing every
+  piece of content that ever linked to them.
+- **Tag with UTM parameters** (or your link tool's equivalent) so traffic sources are visible
+  in your own analytics, not just the vendor's — you want to know which piece of content or
+  email actually drove a click, not just that the vendor credited a sale to you.
+- **Check links on a schedule.** Vendors restructure URLs, discontinue products, or shut down
+  programs without notice; a broken affiliate link is a dead end for a reader and lost revenue
+  for you. Periodically audit older content's links, especially anything ranking well in
+  search (see `playbooks/seo-content.md`) since that content keeps earning long after
+  publication.
+- **Keep redirect links on a domain you control**, not a third-party shortener you don't own —
+  if the shortener disappears or gets flagged/blocked by a platform, every link you've ever
+  shared through it breaks at once.
+
+## Platform and income risk
+
+Affiliate income is unusually concentrated in a small number of dependencies outside your
+control — plan for that instead of being surprised by it:
+
+- **A single traffic source failing can zero out income overnight** — a search algorithm
+  update that drops your rankings, a social platform ban, or an ad account suspension. Don't
+  build the entire business on one channel; use paid, organic/SEO, and list-based promotion
+  (see `playbooks/paid-ads.md`, `playbooks/seo-content.md`, `playbooks/email-marketing.md`) as
+  genuinely separate legs, not just theoretically diversified.
+- **A single vendor/program ending or changing terms can zero out that revenue line** — this
+  is the direct argument for the multi-brand approach in this playbook: your own list is the
+  asset that survives any one program change, since you can promote a replacement offer to the
+  same audience.
+- **Track revenue by channel and by vendor separately** (see `playbooks/analytics.md`), and
+  treat any channel or vendor providing a large majority of income as a flagged risk to
+  actively diversify away from, even while it's performing well.
+
 ## Disclosure and compliance
 
 - Disclose the affiliate relationship clearly and conspicuously, before the recommendation,
