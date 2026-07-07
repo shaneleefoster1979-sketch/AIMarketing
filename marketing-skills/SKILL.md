@@ -16,6 +16,7 @@ designing a funnel or campaign, planning a launch, or reviewing marketing perfor
 | Paid acquisition (Meta, Google, YouTube, etc.)       | `playbooks/paid-ads.md`       | `playbooks/copywriting.md`            |
 | Freebies, opt-ins, quizzes, challenges               | `playbooks/lead-magnets.md`   | `the-fundamentals.md`                 |
 | Content calendars, organic/social strategy           | `playbooks/content-strategy.md`| `about.md`                           |
+| Promoting third-party products/brands for commission | `playbooks/affiliate-marketing.md` | `the-fundamentals.md`, `playbooks/email-marketing.md` |
 | Reporting, metrics, and deciding what to cut/scale   | `playbooks/analytics.md`      | —                                     |
 
 ## How to use this pack

@@ -15,6 +15,23 @@ measure.
 | Close          | Checkout completion rate, cart abandonment rate       |
 | Retain/Refer   | Repeat purchase rate, churn/refund rate, referral rate, LTV |
 
+## Affiliate-specific metrics
+
+When you're promoting someone else's product (see `playbooks/affiliate-marketing.md`), the
+Offer and Close stages above are only partly visible to you — the vendor's checkout sits
+outside your tracking. Use these instead/in addition:
+
+| Metric                     | What it tells you                                                  |
+|------------------------------|------------------------------------------------------------------------|
+| EPC (earnings per click)     | Revenue generated per click sent to the vendor — the single best number for comparing different offers against each other, since it nets out the vendor's own conversion rate and commission structure into one figure. |
+| Cookie duration               | How long after a click you still get credit for a purchase — affects how directly a promotion's results map to a single send/post, especially for considered purchases. |
+| Vendor-side conversion rate   | The rate at which your clicks convert on the vendor's page — not directly controllable, but worth tracking per-vendor to catch an offer that's degraded (e.g. a vendor raised price or broke their checkout). |
+| Revenue per subscriber/segment | Tracked over time per list segment, not just per promotion — the number that tells you whether a segment is worth continuing to nurture and monetize. |
+| Refund/chargeback rate (where visible) | An early warning that an offer is a poor fit for your audience, even if EPC currently looks fine. |
+
+Report EPC next to CPA/CAC exactly the way LTV is reported below — a high EPC with a low cost
+to reach the audience is the affiliate equivalent of a healthy LTV:CAC ratio.
+
 ## The metric that matters most: LTV vs. CAC
 
 Every acquisition decision ultimately comes down to whether lifetime value exceeds customer
