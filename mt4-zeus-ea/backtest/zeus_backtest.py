@@ -26,7 +26,7 @@ ZEUS_STOP_LOSS_PIPS = 60.0
 ZEUS_TP_PIPS = [60.0, 120.0, 180.0, None]  # T1..T4; T4 has no target (rides the trend)
 ZEUS_WEIGHTS = [20, 25, 25, 30]            # risk-% split across T1..T4
 ZEUS_MAX_LOTS_PER_TRADE = 50.0
-RMC_MIN_CONFIRM_MAGNITUDE = 0.10           # matches Zeus.mq4's RMC_Dir() fix
+RMC_MIN_CONFIRM_MAGNITUDE = 0.02           # matches Zeus.mq4's RMC_Dir() fix -- locked in via dev-slice sweep (see rmc_threshold_sweep_dev.csv)
 
 
 def rmc_dir(rmc_value) -> int:
