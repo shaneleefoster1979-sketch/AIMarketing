@@ -21,10 +21,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from quota_environment import QuotaEnv, N_CONTEXT_FEATURES
+from quota_environment import QuotaEnv, N_ACTIONS, decode_action
 
-OBS_DIM = 5 + N_CONTEXT_FEATURES
-N_ACTIONS = 2
+OBS_DIM = 5
 GAMMA = 0.95
 LR = 1e-3
 BATCH_SIZE = 64
@@ -109,22 +108,27 @@ def evaluate(policy: QNet, df: pd.DataFrame) -> dict:
     env = QuotaEnv(df)
     obs = env.reset()
     done = False
-    n_skipped = 0
-    n_taken = 0
+    action_counts: dict[int, int] = {}
     while not done:
         with torch.no_grad():
             q = policy(torch.tensor(obs).unsqueeze(0))
             action = int(q.argmax(dim=1).item())
-        if action == 1:
-            n_taken += 1
-        else:
-            n_skipped += 1
+        action_counts[action] = action_counts.get(action, 0) + 1
         obs, reward, done, info = env.step(action)
     tl = info["trade_log"]
     wins = sum(1 for t in tl if t["pnl"] > 0)
+
+    settings_used = {}
+    for action, count in sorted(action_counts.items()):
+        if action == 0:
+            settings_used["skip"] = count
+        else:
+            sl_pips, tp_list = decode_action(action)
+            settings_used[f"sl={sl_pips:.0f} tp={tp_list}"] = count
+
     return {
         "trades": len(tl), "win_rate": wins / len(tl) * 100 if tl else float("nan"),
-        "ending_equity": info["equity"], "signals_taken": n_taken, "signals_skipped": n_skipped,
+        "ending_equity": info["equity"], "settings_used": settings_used,
     }
 
 

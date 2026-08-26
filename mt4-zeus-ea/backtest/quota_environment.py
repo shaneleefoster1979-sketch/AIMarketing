@@ -2,22 +2,22 @@
 """
 quota_environment.py
 
-Take-or-skip environment: Zeus's own rules (RC+RMC dual-agreement gate,
-4-leg 20/25/25/30 sizing, 60-pip stop, 60/120/180/none targets, 3% total
-risk, 50-lot cap, break-even-on-T1-close) are completely unchanged and
-untouchable by the agent. The ONLY decision the agent makes is, at each
-bar where Zeus's own rule would open a trade while flat: take it, or skip
-it. All position sizing, stops, and targets for a taken trade are exactly
-what Zeus would use -- the agent cannot make a taken trade bigger or
-riskier than Zeus already allows.
+Dynamic-settings environment: Zeus's entry gate (RC+RMC dual-agreement,
+brick direction match), 4-leg structure, weight split (20/25/25/30), and
+3% total risk cap are unchanged and untouchable. What the agent now
+controls, at each bar where Zeus's own gate would open a trade while
+flat, is WHICH stop-loss distance and take-profit profile to use for that
+trade -- position size is always recomputed so the total dollar risk
+still equals exactly 3% of equity, split by the fixed weights, no matter
+which stop distance is chosen. The agent cannot make a trade riskier than
+Zeus's 3% cap allows; it can only change how that fixed risk is shaped
+(tight/wide stops and targets) or skip the trade entirely.
 
-Reward = actual realized P&L (as a fraction of pre-trade equity, so the
-network sees a stable scale) from any legs that close this bar, PLUS a
-skip-penalty that only fires when the trailing-30-day equity return is
-below the quota target AND the agent chose to skip a valid signal. There
-is no bonus for taking a trade -- only a cost for passing one up while
-behind pace -- so the agent can't "fake" progress by taking bad trades;
-every trade it does take still lives or dies on Zeus's own SL/TP.
+Reward = actual realized P&L (as a fraction of pre-trade equity) from any
+legs that close this bar, PLUS a skip-penalty that only fires when the
+trailing-30-day equity return is below the quota target AND the agent
+chose to skip a valid signal. No bonus for taking a trade of any
+configuration -- only a cost for passing one up while behind pace.
 """
 
 from __future__ import annotations
@@ -26,38 +26,48 @@ import numpy as np
 import pandas as pd
 
 from zeus_backtest import (
-    ZEUS_WEIGHTS, ZEUS_TP_PIPS, ZEUS_STOP_LOSS_PIPS, PIP_SIZE_USDJPY,
-    rc_dir, rmc_dir, get_lot_size, _close_leg,
+    ZEUS_WEIGHTS, ZEUS_TOTAL_RISK_PERCENT, ZEUS_MAX_LOTS_PER_TRADE,
+    PIP_SIZE_USDJPY, pip_value_per_lot, rc_dir, rmc_dir, _close_leg,
 )
 
 QUOTA_WINDOW_DAYS = 30
 QUOTA_TARGET = 0.10
-SKIP_PENALTY_ALPHA = 1.0  # scales the behind-pace skip penalty; tuned empirically
+SKIP_PENALTY_ALPHA = 1.0
 
-def compute_context_features(df: pd.DataFrame) -> np.ndarray:
-    """Volatility (brick formation speed) and volume -- the only two
-    context features in this run, per request (momentum/time-of-day/
-    session features from the previous run removed)."""
-    ts = pd.to_datetime(df["timestamp"])
-    n = len(df)
+# The settings the agent may choose per trade. Position size is always
+# recomputed to keep total risk at exactly 3% regardless of which of
+# these is picked -- see get_lot_size_dynamic.
+SL_CHOICES_PIPS = [40.0, 60.0, 80.0]
+TP_PROFILES_PIPS = {
+    "tight":    [40.0, 80.0, 120.0, None],
+    "standard": [60.0, 120.0, 180.0, None],
+    "wide":     [80.0, 160.0, 240.0, None],
+}
+TP_PROFILE_NAMES = list(TP_PROFILES_PIPS.keys())
 
-    # Brick formation speed: minutes since the previous brick closed.
-    # Fast bricks (short duration) = high volatility; slow = low volatility.
-    minutes = ts.diff().dt.total_seconds().to_numpy() / 60.0
-    minutes[0] = np.nanmedian(minutes[1:]) if n > 1 else 1.0
-    minutes = np.nan_to_num(minutes, nan=1.0)
-    volatility = -np.log1p(np.clip(minutes, 0, None))  # higher = faster = more volatile
-    volatility = (volatility - volatility.mean()) / (volatility.std() + 1e-9)
-
-    volume = df["volume"].to_numpy(dtype=float) if "volume" in df.columns else np.zeros(n)
-    volume = np.nan_to_num(volume, nan=0.0)
-    log_volume = np.log1p(np.clip(volume, 0, None))
-    log_volume = (log_volume - log_volume.mean()) / (log_volume.std() + 1e-9)
-
-    return np.column_stack([volatility, log_volume]).astype(np.float32)
+N_CONTEXT_FEATURES = 0
+N_SETTINGS_ACTIONS = len(SL_CHOICES_PIPS) * len(TP_PROFILE_NAMES)
+N_ACTIONS = 1 + N_SETTINGS_ACTIONS  # action 0 = skip
 
 
-N_CONTEXT_FEATURES = 2
+def decode_action(action: int) -> tuple[float, list] | None:
+    """Returns (sl_pips, tp_pips_list) for a take action, or None for skip."""
+    if action == 0:
+        return None
+    idx = action - 1
+    sl_idx, tp_idx = divmod(idx, len(TP_PROFILE_NAMES))
+    return SL_CHOICES_PIPS[sl_idx], TP_PROFILES_PIPS[TP_PROFILE_NAMES[tp_idx]]
+
+
+def get_lot_size_dynamic(equity: float, weight_pct: int, price: float, sl_pips: float) -> float:
+    """Same 3%-of-equity risk formula as Zeus's own get_lot_size, but for
+    an arbitrary chosen stop distance instead of the fixed 60 pips -- the
+    dollar risk per leg stays pinned to equity * 3% * weight% no matter
+    which stop the agent picks."""
+    risk_dollars = equity * (ZEUS_TOTAL_RISK_PERCENT / 100.0) * (weight_pct / 100.0)
+    lots = risk_dollars / (sl_pips * pip_value_per_lot(price))
+    lots = min(lots, ZEUS_MAX_LOTS_PER_TRADE)
+    return max(round(lots, 2), 0.01)
 
 
 class QuotaEnv:
@@ -65,7 +75,6 @@ class QuotaEnv:
         self.df = df.reset_index(drop=True)
         self.starting_balance = starting_balance
         self.spread_pips = spread_pips
-        self.context = compute_context_features(self.df)
 
     def reset(self):
         self.i = 0
@@ -74,7 +83,6 @@ class QuotaEnv:
         self.t1_was_open = False
         self.breakeven_triggered = False
         self.trade_log: list[dict] = []
-        # (timestamp, equity) history for the trailing-30-day lookup
         self.equity_history: list[tuple] = [(self.df.iloc[0]["timestamp"], self.equity)]
         obs, done, _ = self._advance_to_next_decision()
         self._done_immediately = done
@@ -95,18 +103,15 @@ class QuotaEnv:
 
     def _obs(self, row) -> np.ndarray:
         trailing_ret = self._trailing_30d_return(row["timestamp"])
-        base = np.array([
+        return np.array([
             row["rc_value"],
             row["rmc_value"] if not pd.isna(row["rmc_value"]) else 0.0,
             trailing_ret - QUOTA_TARGET,          # ahead(+)/behind(-) pace
             np.log(max(self.equity, 1.0) / self.starting_balance),
             1.0 if any(s is not None for s in self.slots) else 0.0,
         ], dtype=np.float32)
-        return np.concatenate([base, self.context[self.i]])
 
     def _manage_open_legs(self, row) -> float:
-        """Runs Zeus's exact VSL/break-even/VTP/RC-flip-exit logic for one
-        bar. Returns this bar's realized P&L (0.0 if nothing closed)."""
         close, open_ = float(row["close"]), float(row["open"])
         ts = row["timestamp"]
         brick_dir = 1 if close > open_ else -1
@@ -173,11 +178,11 @@ class QuotaEnv:
 
         return pnl_this_bar
 
-    def _open_trade(self, row, entry_dir: int) -> None:
+    def _open_trade(self, row, entry_dir: int, sl_pips: float, tp_pips_list: list) -> None:
         close, ts = float(row["close"]), row["timestamp"]
-        for idx, (weight, tp_pips) in enumerate(zip(ZEUS_WEIGHTS, ZEUS_TP_PIPS)):
-            lots = get_lot_size(self.equity, weight, close)
-            stop = close - entry_dir * ZEUS_STOP_LOSS_PIPS * PIP_SIZE_USDJPY
+        for idx, (weight, tp_pips) in enumerate(zip(ZEUS_WEIGHTS, tp_pips_list)):
+            lots = get_lot_size_dynamic(self.equity, weight, close, sl_pips)
+            stop = close - entry_dir * sl_pips * PIP_SIZE_USDJPY
             target = (close + entry_dir * tp_pips * PIP_SIZE_USDJPY) if tp_pips is not None else None
             self.slots[idx] = {
                 "label": f"T{idx + 1}", "direction": entry_dir, "entry_price": close,
@@ -187,9 +192,6 @@ class QuotaEnv:
         self.breakeven_triggered = False
 
     def _advance_to_next_decision(self):
-        """Runs management-only bars until either the data runs out or a
-        flat bar with a valid Zeus signal is reached (a real decision
-        point). Returns (obs, done, pnl_accum_while_fast_forwarding)."""
         pnl_accum = 0.0
         while self.i < len(self.df):
             row = self.df.iloc[self.i]
@@ -214,19 +216,21 @@ class QuotaEnv:
         return None, True, pnl_accum
 
     def step(self, action: int):
-        """action: 0 = skip the pending signal, 1 = take it (Zeus sizing/SL/TP)."""
+        """action 0 = skip. actions 1..N_SETTINGS_ACTIONS = take, using the
+        (sl_pips, tp_profile) combination decode_action(action) selects --
+        sized so total risk is still exactly 3%, whichever combination."""
         row = self.df.iloc[self.i]
         trailing_ret = self._trailing_30d_return(row["timestamp"])
         behind_pace = max(0.0, QUOTA_TARGET - trailing_ret)
 
-        pnl_pct_before = 0.0
-        if action == 1:
+        settings = decode_action(action)
+        if settings is not None:
+            sl_pips, tp_pips_list = settings
             equity_before = self.equity
-            self._open_trade(row, self._pending_entry_dir)
+            self._open_trade(row, self._pending_entry_dir, sl_pips, tp_pips_list)
             self.i += 1
             obs, done, pnl_accum = self._advance_to_next_decision()
-            pnl_pct_before = pnl_accum / equity_before if equity_before > 0 else 0.0
-            reward = pnl_pct_before
+            reward = pnl_accum / equity_before if equity_before > 0 else 0.0
         else:
             self.i += 1
             obs, done, pnl_accum = self._advance_to_next_decision()
