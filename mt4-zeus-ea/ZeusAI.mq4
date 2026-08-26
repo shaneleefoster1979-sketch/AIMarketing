@@ -130,12 +130,12 @@ input double AI_QuotaTargetPct    = 10.0;   // Trailing-window equity growth tar
 input int    AI_QuotaWindowDays   = 30;     // Trailing window length in days, matches training
 
 double   AI_RefBalance     = 0;
-string   AI_RefBalanceFile = "ZeusAI_refbalance_" + IntegerToString(MagicNumber) + ".txt";
+string   AI_RefBalanceFile = "";  // built in OnInit(), once MagicNumber (declared below) is in scope
 datetime aiEquityTime[];
 double   aiEquityValue[];
 int      aiEquityCount = 0;
 #define  AI_MAX_EQUITY_HISTORY 5000
-string   AI_EquityFile = "ZeusAI_equity_" + IntegerToString(MagicNumber) + ".csv";
+string   AI_EquityFile = "";      // built in OnInit(), same reason
 
 input double TotalRiskPercent      = 3.0;   // Total risk % per signal
 input int    StopLossPoints        = 600;   // SL in points (600 = 60 pips on 3-digit)
@@ -515,6 +515,8 @@ int OnInit()
    InitialRC_Direction  = 0;
    InitialRMC_Direction = 0;
    RestoreStateFromGlobalVariables();
+   AI_RefBalanceFile = "ZeusAI_refbalance_" + IntegerToString(MagicNumber) + ".txt";
+   AI_EquityFile     = "ZeusAI_equity_"     + IntegerToString(MagicNumber) + ".csv";
    AI_LoadOrInitRefBalance();
    AI_LoadEquityHistory();
 
@@ -863,6 +865,7 @@ int RMC_Dir(double rmc)
 void ZAI_Forward(double &x[], double &qOut[])
 {
    double h1[ZAI_H1];
+   ArrayInitialize(h1, 0.0);
    for(int o = 0; o < ZAI_H1; o++)
    {
       double s = ZAI_B1[o];
@@ -870,6 +873,7 @@ void ZAI_Forward(double &x[], double &qOut[])
       h1[o] = MathMax(0.0, s);
    }
    double h2[ZAI_H2];
+   ArrayInitialize(h2, 0.0);
    for(int o = 0; o < ZAI_H2; o++)
    {
       double s = ZAI_B2[o];
