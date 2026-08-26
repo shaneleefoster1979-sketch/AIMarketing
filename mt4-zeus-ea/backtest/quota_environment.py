@@ -34,43 +34,12 @@ QUOTA_WINDOW_DAYS = 30
 QUOTA_TARGET = 0.10
 SKIP_PENALTY_ALPHA = 1.0  # scales the behind-pace skip penalty; tuned empirically
 
-MOMENTUM_RUN_CAP = 10  # same cap RMC itself uses for run length
-
-# Approximate major FX session hours, UTC, ignoring DST (a reasonable
-# approximation for a feature -- the boundaries shift by ~1hr twice a year,
-# not worth the added complexity of a real DST calendar here).
-SESSION_HOURS_UTC = {
-    "sydney":    (22, 7),   # wraps midnight
-    "tokyo":     (0, 9),
-    "london":    (8, 17),
-    "new_york":  (13, 22),
-}
-
-
-def _hour_in_session(hour: np.ndarray, start: int, end: int) -> np.ndarray:
-    if start < end:
-        return (hour >= start) & (hour < end)
-    return (hour >= start) | (hour < end)  # wraps midnight (Sydney)
-
-
 def compute_context_features(df: pd.DataFrame) -> np.ndarray:
-    """Momentum (signed run length), volatility (brick formation speed),
-    time-of-day (cyclic), and session-overlap features -- all computed
-    once up front, purely from data Zeus's own rules don't already use."""
-    close = df["close"].to_numpy()
-    open_ = df["open"].to_numpy()
+    """Volatility (brick formation speed) and volume -- the only two
+    context features in this run, per request (momentum/time-of-day/
+    session features from the previous run removed)."""
     ts = pd.to_datetime(df["timestamp"])
     n = len(df)
-
-    brick_up = close > open_
-    # Signed run length ending at each position (same run-length logic RMC
-    # uses internally, exposed here as its own raw feature).
-    run_id = (brick_up != np.roll(brick_up, 1))
-    run_id[0] = True
-    run_id = np.cumsum(run_id)
-    run_len = pd.Series(run_id).groupby(run_id).cumcount().to_numpy() + 1
-    run_len = np.minimum(run_len, MOMENTUM_RUN_CAP)
-    momentum = np.where(brick_up, run_len, -run_len) / MOMENTUM_RUN_CAP
 
     # Brick formation speed: minutes since the previous brick closed.
     # Fast bricks (short duration) = high volatility; slow = low volatility.
@@ -80,24 +49,15 @@ def compute_context_features(df: pd.DataFrame) -> np.ndarray:
     volatility = -np.log1p(np.clip(minutes, 0, None))  # higher = faster = more volatile
     volatility = (volatility - volatility.mean()) / (volatility.std() + 1e-9)
 
-    hour = ts.dt.hour.to_numpy()
-    hour_sin = np.sin(2 * np.pi * hour / 24.0)
-    hour_cos = np.cos(2 * np.pi * hour / 24.0)
+    volume = df["volume"].to_numpy(dtype=float) if "volume" in df.columns else np.zeros(n)
+    volume = np.nan_to_num(volume, nan=0.0)
+    log_volume = np.log1p(np.clip(volume, 0, None))
+    log_volume = (log_volume - log_volume.mean()) / (log_volume.std() + 1e-9)
 
-    session_flags = {}
-    for name, (start, end) in SESSION_HOURS_UTC.items():
-        session_flags[name] = _hour_in_session(hour, start, end).astype(np.float32)
-    n_active = sum(session_flags.values())
-
-    return np.column_stack([
-        momentum, volatility, hour_sin, hour_cos,
-        session_flags["sydney"], session_flags["tokyo"],
-        session_flags["london"], session_flags["new_york"],
-        n_active,
-    ]).astype(np.float32)
+    return np.column_stack([volatility, log_volume]).astype(np.float32)
 
 
-N_CONTEXT_FEATURES = 9
+N_CONTEXT_FEATURES = 2
 
 
 class QuotaEnv:
