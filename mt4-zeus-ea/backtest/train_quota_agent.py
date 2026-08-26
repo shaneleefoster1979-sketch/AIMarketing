@@ -21,9 +21,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from quota_environment import QuotaEnv
+from quota_environment import QuotaEnv, N_CONTEXT_FEATURES
 
-OBS_DIM = 5
+OBS_DIM = 5 + N_CONTEXT_FEATURES
 N_ACTIONS = 2
 GAMMA = 0.95
 LR = 1e-3

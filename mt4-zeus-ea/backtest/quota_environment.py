@@ -34,12 +34,78 @@ QUOTA_WINDOW_DAYS = 30
 QUOTA_TARGET = 0.10
 SKIP_PENALTY_ALPHA = 1.0  # scales the behind-pace skip penalty; tuned empirically
 
+MOMENTUM_RUN_CAP = 10  # same cap RMC itself uses for run length
+
+# Approximate major FX session hours, UTC, ignoring DST (a reasonable
+# approximation for a feature -- the boundaries shift by ~1hr twice a year,
+# not worth the added complexity of a real DST calendar here).
+SESSION_HOURS_UTC = {
+    "sydney":    (22, 7),   # wraps midnight
+    "tokyo":     (0, 9),
+    "london":    (8, 17),
+    "new_york":  (13, 22),
+}
+
+
+def _hour_in_session(hour: np.ndarray, start: int, end: int) -> np.ndarray:
+    if start < end:
+        return (hour >= start) & (hour < end)
+    return (hour >= start) | (hour < end)  # wraps midnight (Sydney)
+
+
+def compute_context_features(df: pd.DataFrame) -> np.ndarray:
+    """Momentum (signed run length), volatility (brick formation speed),
+    time-of-day (cyclic), and session-overlap features -- all computed
+    once up front, purely from data Zeus's own rules don't already use."""
+    close = df["close"].to_numpy()
+    open_ = df["open"].to_numpy()
+    ts = pd.to_datetime(df["timestamp"])
+    n = len(df)
+
+    brick_up = close > open_
+    # Signed run length ending at each position (same run-length logic RMC
+    # uses internally, exposed here as its own raw feature).
+    run_id = (brick_up != np.roll(brick_up, 1))
+    run_id[0] = True
+    run_id = np.cumsum(run_id)
+    run_len = pd.Series(run_id).groupby(run_id).cumcount().to_numpy() + 1
+    run_len = np.minimum(run_len, MOMENTUM_RUN_CAP)
+    momentum = np.where(brick_up, run_len, -run_len) / MOMENTUM_RUN_CAP
+
+    # Brick formation speed: minutes since the previous brick closed.
+    # Fast bricks (short duration) = high volatility; slow = low volatility.
+    minutes = ts.diff().dt.total_seconds().to_numpy() / 60.0
+    minutes[0] = np.nanmedian(minutes[1:]) if n > 1 else 1.0
+    minutes = np.nan_to_num(minutes, nan=1.0)
+    volatility = -np.log1p(np.clip(minutes, 0, None))  # higher = faster = more volatile
+    volatility = (volatility - volatility.mean()) / (volatility.std() + 1e-9)
+
+    hour = ts.dt.hour.to_numpy()
+    hour_sin = np.sin(2 * np.pi * hour / 24.0)
+    hour_cos = np.cos(2 * np.pi * hour / 24.0)
+
+    session_flags = {}
+    for name, (start, end) in SESSION_HOURS_UTC.items():
+        session_flags[name] = _hour_in_session(hour, start, end).astype(np.float32)
+    n_active = sum(session_flags.values())
+
+    return np.column_stack([
+        momentum, volatility, hour_sin, hour_cos,
+        session_flags["sydney"], session_flags["tokyo"],
+        session_flags["london"], session_flags["new_york"],
+        n_active,
+    ]).astype(np.float32)
+
+
+N_CONTEXT_FEATURES = 9
+
 
 class QuotaEnv:
     def __init__(self, df: pd.DataFrame, starting_balance: float = 1000.0, spread_pips: float = 1.0):
         self.df = df.reset_index(drop=True)
         self.starting_balance = starting_balance
         self.spread_pips = spread_pips
+        self.context = compute_context_features(self.df)
 
     def reset(self):
         self.i = 0
@@ -69,13 +135,14 @@ class QuotaEnv:
 
     def _obs(self, row) -> np.ndarray:
         trailing_ret = self._trailing_30d_return(row["timestamp"])
-        return np.array([
+        base = np.array([
             row["rc_value"],
             row["rmc_value"] if not pd.isna(row["rmc_value"]) else 0.0,
             trailing_ret - QUOTA_TARGET,          # ahead(+)/behind(-) pace
             np.log(max(self.equity, 1.0) / self.starting_balance),
             1.0 if any(s is not None for s in self.slots) else 0.0,
         ], dtype=np.float32)
+        return np.concatenate([base, self.context[self.i]])
 
     def _manage_open_legs(self, row) -> float:
         """Runs Zeus's exact VSL/break-even/VTP/RC-flip-exit logic for one
