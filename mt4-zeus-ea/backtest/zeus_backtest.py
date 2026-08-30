@@ -67,7 +67,11 @@ def _close_leg(leg: dict, exit_price: float, exit_timestamp, outcome: str, sprea
     return pnl, record
 
 
-def run_zeus_backtest(df: pd.DataFrame, starting_balance: float, spread_pips: float = 1.0) -> dict:
+def run_zeus_backtest(df: pd.DataFrame, starting_balance: float, spread_pips: float = 1.0, direction_fn=None) -> dict:
+    """direction_fn(row, slots) -> -1/0/1, optional: overrides the entry
+    direction check only (step 5 below) for testing additional filters on
+    top of the same RC+RMC exit/management logic. Leave None for the
+    exact current live Zeus entry rule (RC+RMC dual-agreement)."""
     equity = starting_balance
     slots: list[dict | None] = [None, None, None, None]
     t1_was_open = False
@@ -146,11 +150,14 @@ def run_zeus_backtest(df: pd.DataFrame, starting_balance: float, spread_pips: fl
 
         # 5. Entry -- RC and RMC dual-agreement, brick must print in trade direction, all slots flat.
         if all(leg is None for leg in slots):
-            entry_dir = 0
-            if rc < 0 and rmc == -1:
-                entry_dir = -1
-            elif rc > 0 and rmc == 1:
-                entry_dir = 1
+            if direction_fn is not None:
+                entry_dir = direction_fn(row, slots)
+            else:
+                entry_dir = 0
+                if rc < 0 and rmc == -1:
+                    entry_dir = -1
+                elif rc > 0 and rmc == 1:
+                    entry_dir = 1
 
             if entry_dir != 0 and brick_dir == entry_dir:
                 for idx, (weight, tp_pips) in enumerate(zip(ZEUS_WEIGHTS, ZEUS_TP_PIPS)):
