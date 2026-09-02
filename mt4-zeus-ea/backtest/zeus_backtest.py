@@ -16,6 +16,7 @@ agreement check and the RC-flip exit gate use it, same as the live EA.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 PIP_SIZE_USDJPY = 0.01
@@ -27,9 +28,48 @@ ZEUS_TP_PIPS = [60.0, 120.0, 180.0, None]  # T1..T4; T4 has no target (rides the
 ZEUS_WEIGHTS = [20, 25, 25, 30]            # risk-% split across T1..T4
 ZEUS_MAX_LOTS_PER_TRADE = 50.0
 RMC_MIN_CONFIRM_MAGNITUDE = 0.03           # matches Zeus.mq4's RMC_Dir() fix -- raised from 0.02 to 0.03 by the user live after a trade still entered on an invisible RMC signal line at 0.02
+RMC_MIN_SIGN_RUN_BARS = 2                  # matches ZeusAI.mq4's RMC_MinSignRunBars fix -- MT4 can't draw a visible connecting line on the first bar of a fresh sign flip, so require the sign to hold this many bars before counting as confirmed
+
+
+def compute_rmc_confirmed_dir(rmc_series: pd.Series) -> np.ndarray:
+    """Precomputed, stateful gate -- exact match for ZeusAI.mq4's
+    GetRMC_Value()+RMC_Dir(): RMC's sign must hold for RMC_MIN_SIGN_RUN_BARS
+    consecutive bars (reset to 0 on any NaN/no-reading bar, same as EMPTY_
+    VALUE resetting g_rmcSignRunLength live) AND clear RMC_MIN_CONFIRM_
+    MAGNITUDE, before it counts as a confirmed +1/-1 direction. This can't
+    be a stateless per-row function like rc_dir() since it depends on the
+    run of prior bars, so it's computed once up front instead."""
+    values = rmc_series.to_numpy()
+    n = len(values)
+    out = np.zeros(n, dtype=int)
+    prev_sign = 0
+    run_len = 0
+    for i in range(n):
+        v = values[i]
+        if pd.isna(v):
+            prev_sign, run_len = 0, 0
+            continue
+        sign = 1 if v > 0 else (-1 if v < 0 else 0)
+        if sign != 0 and sign == prev_sign:
+            run_len += 1
+        else:
+            run_len = 1 if sign != 0 else 0
+        prev_sign = sign
+
+        if run_len >= RMC_MIN_SIGN_RUN_BARS:
+            if v >= RMC_MIN_CONFIRM_MAGNITUDE:
+                out[i] = 1
+            elif v <= -RMC_MIN_CONFIRM_MAGNITUDE:
+                out[i] = -1
+    return out
 
 
 def rmc_dir(rmc_value) -> int:
+    """Magnitude-only gate, no run-length state -- kept for the DQN's own
+    raw-feature construction (which reads rmc_value directly, unaffected
+    by the entry/exit gate's stricter rule) and anywhere a single value is
+    checked in isolation. Entry/exit gating uses compute_rmc_confirmed_dir
+    instead, which is the one that actually matches live ZeusAI.mq4."""
     if pd.isna(rmc_value):
         return 0
     if rmc_value >= RMC_MIN_CONFIRM_MAGNITUDE:
@@ -77,6 +117,7 @@ def run_zeus_backtest(df: pd.DataFrame, starting_balance: float, spread_pips: fl
     t1_was_open = False
     breakeven_triggered = False
     trade_log: list[dict] = []
+    rmc_confirmed = compute_rmc_confirmed_dir(df["rmc_value"])
 
     for i in range(len(df)):
         if equity <= 0:
@@ -86,7 +127,7 @@ def run_zeus_backtest(df: pd.DataFrame, starting_balance: float, spread_pips: fl
         ts = row["timestamp"]
         brick_dir = 1 if close > open_ else -1
         rc = rc_dir(row["rc_value"])
-        rmc = rmc_dir(row["rmc_value"])
+        rmc = int(rmc_confirmed[i])
 
         # 1. Virtual SL -- candle close only.
         for idx, leg in enumerate(slots):
