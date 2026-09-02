@@ -156,6 +156,7 @@ input int    RMC_RSI_MaxPeriod     = 21;    // Must match Renko Momentum Cycle R
 input int    RMC_CycleMemory       = 5;     // Must match Renko Momentum Cycle CycleMemory input
 input double RMC_MinConfirmMagnitude = 0.03; // RMC must be at least this far from zero (of its -1..+1 range) to count as a real red/blue reading, not noise sitting on the zero line -- raised from 0.02 to 0.03 live after a trade still entered on a signal so weak the RMC line remained invisible on the chart
 input bool   AllowNewEntries       = true;  // Uncheck to pause entries after manual close
+input bool   TrustInitialDirection = false; // Set true on THIS attach only when you judge the current RC/RMC direction is already valid (e.g. price resuming its main trend) -- skips waiting for RC or RMC to flip away from their reading at attach before the first trade. Set back to false afterward; this is a one-time-per-attach manual call, not a standing setting.
 input bool   BypassRenkoResetGate   = false; // TESTER ONLY: skip the Renko-reset unlock handshake (leave false for live)
 input int    RenkoResetTimeoutSeconds = 60; // Auto-unlock entries if Renko Reset script hasn't run within this many seconds
 input double MaxLotsPerTrade       = 50.0;  // Broker max lot size per trade
@@ -593,7 +594,14 @@ int OnInit()
    // Arm immediately if EITHER side was neutral at load -- nothing to wait
    // for on that side, mirrors RC's own original immediate-arm behavior,
    // now applied per-indicator under the OR rule.
-   if(InitialRC_Direction == 0 || InitialRMC_Direction == 0)
+   if(TrustInitialDirection)
+   {
+      ReadyToTrade = true;
+      Print("EA: ReadyToTrade immediately - TrustInitialDirection is on for this attach. "
+            "RC dir=", InitialRC_Direction, " RMC dir=", InitialRMC_Direction,
+            " will be traded as-is without waiting for a flip. Remember to turn this back off.");
+   }
+   else if(InitialRC_Direction == 0 || InitialRMC_Direction == 0)
    {
       ReadyToTrade = true;
       Print("EA: ReadyToTrade immediately - RC dir=", InitialRC_Direction,
