@@ -155,6 +155,10 @@ input int    RMC_RSI_MinPeriod     = 7;     // Must match Renko Momentum Cycle R
 input int    RMC_RSI_MaxPeriod     = 21;    // Must match Renko Momentum Cycle RSI_MaxPeriod input
 input int    RMC_CycleMemory       = 5;     // Must match Renko Momentum Cycle CycleMemory input
 input double RMC_MinConfirmMagnitude = 0.03; // RMC must be at least this far from zero (of its -1..+1 range) to count as a real red/blue reading, not noise sitting on the zero line -- raised from 0.02 to 0.03 live after a trade still entered on a signal so weak the RMC line remained invisible on the chart
+input int    RMC_MinSignRunBars      = 2;    // RMC's sign must have held for at least this many consecutive closed bars before counting as confirmed -- MT4 only draws a visible connecting line between two SAME-side bars, so the very first bar of a fresh flip has no line yet even if the value itself is strong. 2 is the structural minimum for any visible segment to exist at all.
+
+double g_rmcSignRunPrevSign = 0;  // -1/0/1: RMC's sign as of the last bar this was updated
+int    g_rmcSignRunLength   = 0;  // consecutive closed bars that sign has held
 input bool   AllowNewEntries       = true;  // Uncheck to pause entries after manual close
 input bool   BypassRenkoResetGate   = false; // TESTER ONLY: skip the Renko-reset unlock handshake (leave false for live)
 input int    RenkoResetTimeoutSeconds = 60; // Auto-unlock entries if Renko Reset script hasn't run within this many seconds
@@ -802,15 +806,27 @@ double GetRMC_Value()
    int total = Bars;
    int i = 1; // just-closed bar
 
-   if(i + RMC_RSI_MaxPeriod * 3 >= total) return EMPTY_VALUE; // insufficient history yet
+   if(i + RMC_RSI_MaxPeriod * 3 >= total)
+   {
+      g_rmcSignRunPrevSign = 0; g_rmcSignRunLength = 0; // no reading -- breaks any in-progress run
+      return EMPTY_VALUE; // insufficient history yet
+   }
 
    double runVol = 0;
    int    run    = RMC_GetBrickRun(i, total, runVol);
-   if(MathAbs(run) < RMC_MinRunLength) return EMPTY_VALUE; // no qualifying run at this bar
+   if(MathAbs(run) < RMC_MinRunLength)
+   {
+      g_rmcSignRunPrevSign = 0; g_rmcSignRunLength = 0;
+      return EMPTY_VALUE; // no qualifying run at this bar
+   }
 
    int    rsiPeriod = RMC_EstimateCycleLength(i, total);
    double rsi       = iRSI(NULL, 0, rsiPeriod, PRICE_CLOSE, i);
-   if(rsi == EMPTY_VALUE) return EMPTY_VALUE;
+   if(rsi == EMPTY_VALUE)
+   {
+      g_rmcSignRunPrevSign = 0; g_rmcSignRunLength = 0;
+      return EMPTY_VALUE;
+   }
    double rsiNorm   = (rsi - 50.0) / 50.0;
    double decay     = RMC_GetMomentumDecay(i, total);
 
@@ -829,6 +845,16 @@ double GetRMC_Value()
    double rmc = (rsiNorm * 0.5 + runNorm * 0.35 + (volNorm - 1.0) * 0.15)
                 * MathMin(decay, 1.0);
    rmc = MathMax(-1.0, MathMin(1.0, rmc));
+
+   // Track how many consecutive CLOSED bars RMC's sign has held -- this is
+   // what RMC_Dir() checks against RMC_MinSignRunBars below, since a fresh
+   // sign flip has no drawable line yet on its very first bar.
+   double newSign = (rmc > 0) ? 1 : (rmc < 0 ? -1 : 0);
+   if(newSign != 0 && newSign == g_rmcSignRunPrevSign)
+      g_rmcSignRunLength++;
+   else
+      g_rmcSignRunLength = (newSign != 0) ? 1 : 0;
+   g_rmcSignRunPrevSign = newSign;
 
    g_rmcCacheTime       = Time[1];
    g_rmcCacheVal        = rmc;
@@ -849,6 +875,11 @@ double GetRMC_Value()
 int RMC_Dir(double rmc)
 {
    if(rmc == EMPTY_VALUE) return 0;
+   // Require a real, visible connected line -- the sign must have held for
+   // at least RMC_MinSignRunBars closed bars, not just this one. Fixes the
+   // case a magnitude floor alone can't: a strong value on the very FIRST
+   // bar of a fresh flip still has no line drawn yet (nothing to connect to).
+   if(g_rmcSignRunLength < RMC_MinSignRunBars) return 0;
    if(rmc >=  RMC_MinConfirmMagnitude) return  1;
    if(rmc <= -RMC_MinConfirmMagnitude) return -1;
    return 0;
