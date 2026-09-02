@@ -1284,6 +1284,8 @@ bool ExistsT1()
 void CheckVirtualSL()
 {
    double candleClose = Close[1];
+   int    qTickets[10];
+   int    qCount = 0;
 
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
@@ -1298,18 +1300,51 @@ void CheckVirtualSL()
       if(OrderType() == OP_BUY  && candleClose <= vsl) hit = true;
       if(OrderType() == OP_SELL && candleClose >= vsl) hit = true;
 
-      if(hit)
+      if(hit && qCount < 10)
       {
-         double cp = (OrderType() == OP_BUY) ? Bid : Ask;
-         if(OrderClose(ticket, OrderLots(), cp, Slippage))
-         {
-            Print("EA: VSL hit - closed ticket=", ticket,
-                  " CandleClose=", candleClose, " VSL=", vsl);
-            VirtualRemove(ticket);
-            RemoveKnownTicket(ticket);
-         }
-         else
-            Print("EA: VSL close FAILED ticket=", ticket, " err=", GetLastError());
+         qTickets[qCount] = ticket;
+         qCount++;
+      }
+   }
+
+   // FIFO-safe: sort ascending by ticket number (oldest first) before
+   // closing. All 4 Zeus legs share the same symbol+direction, so when a
+   // shared stop hits, several can qualify on the same bar -- Forex.com
+   // (NFA/FIFO-regulated) rejects closing a newer position while an older
+   // one on the same symbol is still open (err 150, ERR_TRADE_PROHIBITED_
+   // BY_FIFO). Closing oldest-ticket-first, and stopping this pass the
+   // moment one fails, is what avoids that -- a failed close here just
+   // gets retried from the top on the very next tick.
+   for(int a = 1; a < qCount; a++)
+   {
+      int keyT = qTickets[a];
+      int b = a - 1;
+      while(b >= 0 && qTickets[b] > keyT)
+      {
+         qTickets[b + 1] = qTickets[b];
+         b--;
+      }
+      qTickets[b + 1] = keyT;
+   }
+
+   for(int q = 0; q < qCount; q++)
+   {
+      int ticket = qTickets[q];
+      if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES)) continue;
+      double vsl = VirtualGetSL(ticket);
+      double cp  = (OrderType() == OP_BUY) ? Bid : Ask;
+      if(OrderClose(ticket, OrderLots(), cp, Slippage))
+      {
+         Print("EA: VSL hit - closed ticket=", ticket,
+               " CandleClose=", candleClose, " VSL=", vsl);
+         VirtualRemove(ticket);
+         RemoveKnownTicket(ticket);
+      }
+      else
+      {
+         Print("EA: VSL close FAILED ticket=", ticket, " err=", GetLastError(),
+               " -- stopping this pass (FIFO: retries from oldest next tick)");
+         break;
       }
    }
 }
@@ -1320,6 +1355,8 @@ void CheckVirtualSL()
 void CheckVirtualTP()
 {
    double candleClose = Close[1];
+   int    qTickets[10];
+   int    qCount = 0;
 
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
@@ -1334,18 +1371,44 @@ void CheckVirtualTP()
       if(OrderType() == OP_BUY  && candleClose >= vtp) hit = true;
       if(OrderType() == OP_SELL && candleClose <= vtp) hit = true;
 
-      if(hit)
+      if(hit && qCount < 10)
       {
-         double cp = (OrderType() == OP_BUY) ? Bid : Ask;
-         if(OrderClose(ticket, OrderLots(), cp, Slippage))
-         {
-            Print("EA: VTP hit - closed ticket=", ticket,
-                  " CandleClose=", candleClose, " VTP=", vtp);
-            VirtualRemove(ticket);
-            RemoveKnownTicket(ticket);
-         }
-         else
-            Print("EA: VTP close FAILED ticket=", ticket, " err=", GetLastError());
+         qTickets[qCount] = ticket;
+         qCount++;
+      }
+   }
+
+   // FIFO-safe close order -- same reasoning as CheckVirtualSL().
+   for(int a = 1; a < qCount; a++)
+   {
+      int keyT = qTickets[a];
+      int b = a - 1;
+      while(b >= 0 && qTickets[b] > keyT)
+      {
+         qTickets[b + 1] = qTickets[b];
+         b--;
+      }
+      qTickets[b + 1] = keyT;
+   }
+
+   for(int q = 0; q < qCount; q++)
+   {
+      int ticket = qTickets[q];
+      if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES)) continue;
+      double vtp = VirtualGetTP(ticket);
+      double cp  = (OrderType() == OP_BUY) ? Bid : Ask;
+      if(OrderClose(ticket, OrderLots(), cp, Slippage))
+      {
+         Print("EA: VTP hit - closed ticket=", ticket,
+               " CandleClose=", candleClose, " VTP=", vtp);
+         VirtualRemove(ticket);
+         RemoveKnownTicket(ticket);
+      }
+      else
+      {
+         Print("EA: VTP close FAILED ticket=", ticket, " err=", GetLastError(),
+               " -- stopping this pass (FIFO: retries from oldest next tick)");
+         break;
       }
    }
 }
@@ -1667,51 +1730,80 @@ void OnTick()
       // to open, giving a clean same-bar reversal instead of going flat.
       int brickDir = ClosedBrickDir();
 
-      bool   moreToClose = true;
-      while(moreToClose)
+      // Collect every ticket that qualifies to close first, then close them
+      // FIFO-safe (oldest ticket first) -- the reversal condition (RC flip
+      // + brick + RMC) is the same for every open leg, so all of them
+      // typically qualify together, and closing out of ticket order gets
+      // rejected by FIFO-regulated brokers (err 150) exactly like the VSL/
+      // TP checks did. Ticket age always matches target-tightness order
+      // here (T1 opened first/tightest, T4 last/widest), so ticket-ascending
+      // is always the correct close order for this strategy.
+      int qTickets[10];
+      int qCount = 0;
+      for(int i = OrdersTotal() - 1; i >= 0; i--)
       {
-         moreToClose = false;
-         for(int i = OrdersTotal() - 1; i >= 0; i--)
+         if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+         if(OrderMagicNumber() != MagicNumber || OrderSymbol() != Symbol()) continue;
+
+         bool flip = (OrderType()==OP_BUY  && rcExit < 0) ||
+                     (OrderType()==OP_SELL && rcExit > 0);
+         if(!flip) continue;
+
+         // Reversal-brick gate: close a buy only on a bear brick, a sell
+         // only on a bull brick (matches the entry brick-direction rule).
+         if(OrderType()==OP_BUY  && brickDir != -1) continue;
+         if(OrderType()==OP_SELL && brickDir !=  1) continue;
+
+         // RMC agreement gate: hold the exit until RMC confirms. Matches
+         // the entry rule exactly so entry and exit stay symmetric -- a
+         // buy closes exactly when the sell entry condition (RC<0 AND
+         // RMC<0) would fire, and vice versa, so the reversal happens
+         // cleanly on the same bar instead of going flat first. Buy
+         // exits need RMC < 0 (red), sell exits need RMC > 0 (blue).
+         if(UseRMCFilter)
          {
-            if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
-            if(OrderMagicNumber() != MagicNumber || OrderSymbol() != Symbol()) continue;
+            if(rmcExitDir == 0) continue;                    // no clear red/blue reading - do not exit
+            if(OrderType()==OP_BUY  && rmcExitDir != -1) continue; // buy exit needs RMC clearly red
+            if(OrderType()==OP_SELL && rmcExitDir !=  1) continue; // sell exit needs RMC clearly blue
+         }
 
-            bool flip = (OrderType()==OP_BUY  && rcExit < 0) ||
-                        (OrderType()==OP_SELL && rcExit > 0);
-            if(!flip) continue;
+         if(qCount < 10)
+         {
+            qTickets[qCount] = OrderTicket();
+            qCount++;
+         }
+      }
 
-            // Reversal-brick gate: close a buy only on a bear brick, a sell
-            // only on a bull brick (matches the entry brick-direction rule).
-            if(OrderType()==OP_BUY  && brickDir != -1) continue;
-            if(OrderType()==OP_SELL && brickDir !=  1) continue;
+      for(int a = 1; a < qCount; a++)
+      {
+         int keyT = qTickets[a];
+         int b = a - 1;
+         while(b >= 0 && qTickets[b] > keyT)
+         {
+            qTickets[b + 1] = qTickets[b];
+            b--;
+         }
+         qTickets[b + 1] = keyT;
+      }
 
-            // RMC agreement gate: hold the exit until RMC confirms. Matches
-            // the entry rule exactly so entry and exit stay symmetric -- a
-            // buy closes exactly when the sell entry condition (RC<0 AND
-            // RMC<0) would fire, and vice versa, so the reversal happens
-            // cleanly on the same bar instead of going flat first. Buy
-            // exits need RMC < 0 (red), sell exits need RMC > 0 (blue).
-            if(UseRMCFilter)
-            {
-               if(rmcExitDir == 0) continue;                    // no clear red/blue reading - do not exit
-               if(OrderType()==OP_BUY  && rmcExitDir != -1) continue; // buy exit needs RMC clearly red
-               if(OrderType()==OP_SELL && rmcExitDir !=  1) continue; // sell exit needs RMC clearly blue
-            }
-
-            int    t      = OrderTicket();
-            bool   wasBuy = (OrderType() == OP_BUY);
-            double cp     = wasBuy ? Bid : Ask;
-            if(OrderClose(t, OrderLots(), cp, Slippage))
-            {
-               Print("EA: RC exit closed ticket=", t,
-                     " rc=", DoubleToStr(rcExit, 3));
-               VirtualRemove(t);
-               RemoveKnownTicket(t);
-               moreToClose = true;
-               break;
-            }
-            else
-               Print("EA: RC exit FAILED ticket=", t, " err=", GetLastError());
+      for(int q = 0; q < qCount; q++)
+      {
+         int t = qTickets[q];
+         if(!OrderSelect(t, SELECT_BY_TICKET, MODE_TRADES)) continue;
+         bool   wasBuy = (OrderType() == OP_BUY);
+         double cp     = wasBuy ? Bid : Ask;
+         if(OrderClose(t, OrderLots(), cp, Slippage))
+         {
+            Print("EA: RC exit closed ticket=", t,
+                  " rc=", DoubleToStr(rcExit, 3));
+            VirtualRemove(t);
+            RemoveKnownTicket(t);
+         }
+         else
+         {
+            Print("EA: RC exit FAILED ticket=", t, " err=", GetLastError(),
+                  " -- stopping this pass (FIFO: retries from oldest next tick)");
+            break;
          }
       }
       if(CountTrades() == 0)
