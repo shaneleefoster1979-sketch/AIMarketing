@@ -1112,21 +1112,6 @@ int AI_Decide()
    return bestAction;
 }
 
-// Draw the standard MT4 entry flag at the fill: blue up-arrow (Wingdings 241)
-// for a buy, red down-arrow (242) for a sell. Entry markers only - no exit
-// arrows, no connecting lines.
-void DrawEntryFlag(datetime dt, double price, bool isBuy)
-{
-   static int flagSeq = 0;
-   flagSeq++;
-   string name = "ZeusFlag_" + IntegerToString(flagSeq);
-   ObjectCreate(0, name, OBJ_ARROW, 0, dt, price);
-   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, isBuy ? 241 : 242);
-   ObjectSetInteger(0, name, OBJPROP_COLOR,     isBuy ? clrBlue : clrRed);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH,     2);
-   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-}
-
 int GetRC_CrossoverSignal()
 {
    // Read shift 0 (just closed) vs shift 1 (previous) to detect
@@ -1222,11 +1207,9 @@ void OpenTrade(int type, double entry, double candleClose,
 
    VirtualStore(ticket, vsl, vtp, candleClose);
 
-   // Entry flag on the SIGNAL bar (shift 1) - the bar RC/RMC/brick were
-   // evaluated on - not the forming bar. Drawing at TimeCurrent put the flag
-   // one bar ahead of the bar the filter tested, making every trade look like
-   // it sat on the wrong side of the filter's zero line.
-   DrawEntryFlag(Time[1], candleClose, type == OP_BUY);
+   // No custom chart markers -- MT4's own native trade-history flags (drawn
+   // automatically for every real order this EA opens/closes) are what's
+   // wanted here, not a custom overlay competing with them.
 
    Print("EA: Opened [", label, "] ticket=", ticket,
          " Lots=", DoubleToStr(lots, 2),
