@@ -885,6 +885,22 @@ int RMC_Dir(double rmc)
    return 0;
 }
 
+// RMC_ExitDir(): magnitude-only, no sign-run requirement -- used ONLY for
+// the RC-flip reversal exit, never for entries. The sign-run gate was
+// requested for entries specifically (no visible line = no new trade);
+// requiring it for exits too was this file's own extra symmetry, and it
+// backtested as a real regression (a slower-to-confirm reversal exit lets
+// more trades ride to their stop instead of getting out early) -- exits
+// keep the original magnitude-only rule so a genuine reversal still closes
+// promptly, same as before the sign-run fix.
+int RMC_ExitDir(double rmc)
+{
+   if(rmc == EMPTY_VALUE) return 0;
+   if(rmc >=  RMC_MinConfirmMagnitude) return  1;
+   if(rmc <= -RMC_MinConfirmMagnitude) return -1;
+   return 0;
+}
+
 // +------------------------------------------------------------------+
 // ZEUS AI -- forward pass, feature build, action decode, equity history
 // +------------------------------------------------------------------+
@@ -1721,7 +1737,7 @@ void OnTick()
       // (both must agree). SL and TP are unaffected and still fire above -
       // this only holds back the discretionary RC exit.
       double rmcExit    = UseRMCFilter ? GetRMC_Value() : 0.0;
-      int    rmcExitDir = UseRMCFilter ? RMC_Dir(rmcExit) : 0;
+      int    rmcExitDir = UseRMCFilter ? RMC_ExitDir(rmcExit) : 0;
 
       // Reversal-brick gate: the just-closed brick must print in the reversal
       // direction (bear brick to close a buy, bull brick to close a sell).

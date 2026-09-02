@@ -121,7 +121,12 @@ class QuotaEnv:
         ts = row["timestamp"]
         brick_dir = 1 if close > open_ else -1
         rc = rc_dir(row["rc_value"])
-        rmc = int(self.rmc_confirmed[self.i])
+        # Magnitude-only for the RC-flip exit -- NOT the strict entry gate.
+        # See zeus_backtest.py's run_zeus_backtest step 4 for why: the
+        # stricter sign-run gate delays this exit and backtested as a real
+        # regression (more trades riding to their stop instead of getting
+        # out early on a genuine reversal).
+        rmc = rmc_dir(row["rmc_value"])
         pnl_this_bar = 0.0
 
         for idx, leg in enumerate(self.slots):

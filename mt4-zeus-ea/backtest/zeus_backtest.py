@@ -127,7 +127,8 @@ def run_zeus_backtest(df: pd.DataFrame, starting_balance: float, spread_pips: fl
         ts = row["timestamp"]
         brick_dir = 1 if close > open_ else -1
         rc = rc_dir(row["rc_value"])
-        rmc = int(rmc_confirmed[i])
+        rmc = int(rmc_confirmed[i])          # strict (magnitude + 2-bar sign-run) -- entries only
+        rmc_exit = rmc_dir(row["rmc_value"])  # magnitude-only -- RC-flip exit only, see step 4
 
         # 1. Virtual SL -- candle close only.
         for idx, leg in enumerate(slots):
@@ -161,7 +162,11 @@ def run_zeus_backtest(df: pd.DataFrame, starting_balance: float, spread_pips: fl
                 trade_log.append(record)
                 slots[idx] = None
 
-        # 4. RC-flip exit, gated by reversal brick + RMC agreement (dual-agreement, same rule as entry).
+        # 4. RC-flip exit, gated by reversal brick + RMC agreement (magnitude-
+        # only -- NOT the strict entry gate. A slower-to-confirm exit lets
+        # more trades ride to their stop instead of getting out early on a
+        # genuine reversal; backtested as a real regression, so exits keep
+        # the original magnitude-only rule).
         any_open = any(leg is not None for leg in slots)
         if any_open:
             for idx, leg in enumerate(slots):
@@ -174,11 +179,11 @@ def run_zeus_backtest(df: pd.DataFrame, starting_balance: float, spread_pips: fl
                     continue
                 if leg["direction"] == -1 and brick_dir != 1:
                     continue
-                if rmc == 0:
+                if rmc_exit == 0:
                     continue
-                if leg["direction"] == 1 and rmc != -1:
+                if leg["direction"] == 1 and rmc_exit != -1:
                     continue
-                if leg["direction"] == -1 and rmc != 1:
+                if leg["direction"] == -1 and rmc_exit != 1:
                     continue
                 pnl, record = _close_leg(leg, close, ts, "rc_exit", spread_pips)
                 equity += pnl
