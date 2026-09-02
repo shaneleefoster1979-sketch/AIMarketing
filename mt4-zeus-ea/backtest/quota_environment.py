@@ -27,8 +27,7 @@ import pandas as pd
 
 from zeus_backtest import (
     ZEUS_WEIGHTS, ZEUS_TOTAL_RISK_PERCENT, ZEUS_MAX_LOTS_PER_TRADE,
-    PIP_SIZE_USDJPY, pip_value_per_lot, rc_dir, rmc_dir,
-    compute_rmc_confirmed_dir, _close_leg,
+    PIP_SIZE_USDJPY, pip_value_per_lot, rc_dir, rmc_dir, _close_leg,
 )
 
 QUOTA_WINDOW_DAYS = 30
@@ -76,10 +75,6 @@ class QuotaEnv:
         self.df = df.reset_index(drop=True)
         self.starting_balance = starting_balance
         self.spread_pips = spread_pips
-        # Gated entry/exit direction (magnitude + 2-consecutive-bar sign-run,
-        # matching live ZeusAI.mq4 exactly). The DQN's own _obs() feature
-        # stays on the raw rmc_value, unaffected -- unchanged from training.
-        self.rmc_confirmed = compute_rmc_confirmed_dir(self.df["rmc_value"])
 
     def reset(self):
         self.i = 0
@@ -121,11 +116,6 @@ class QuotaEnv:
         ts = row["timestamp"]
         brick_dir = 1 if close > open_ else -1
         rc = rc_dir(row["rc_value"])
-        # Magnitude-only for the RC-flip exit -- NOT the strict entry gate.
-        # See zeus_backtest.py's run_zeus_backtest step 4 for why: the
-        # stricter sign-run gate delays this exit and backtested as a real
-        # regression (more trades riding to their stop instead of getting
-        # out early on a genuine reversal).
         rmc = rmc_dir(row["rmc_value"])
         pnl_this_bar = 0.0
 
@@ -213,7 +203,7 @@ class QuotaEnv:
                 close, open_ = float(row["close"]), float(row["open"])
                 brick_dir = 1 if close > open_ else -1
                 rc = rc_dir(row["rc_value"])
-                rmc = int(self.rmc_confirmed[self.i])
+                rmc = rmc_dir(row["rmc_value"])
                 entry_dir = 0
                 if rc < 0 and rmc == -1:
                     entry_dir = -1
