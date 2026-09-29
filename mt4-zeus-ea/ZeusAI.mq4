@@ -661,18 +661,24 @@ double GetRC_Value()
    //   blue line active   = bullish  -> return a POSITIVE value
    //   maroon line active = bearish  -> return a NEGATIVE value
    // Magnitude is the active line's absolute value so magnitude-based callers
-   // keep working. Only shift 0 is read - the old version scanned shift 0 AND
+   // keep working. Only ONE shift is read - the old version scanned shift 0 AND
    // shift 1 and returned the largest-magnitude of all four reads, which could
    // hand back the PREVIOUS bar's opposite direction (buys at bottoms / the
    // impossible sell in an uptrend). That cross-bar, sign-of-value logic was
    // the bug.
-   // Read the just-closed bar (shift 1) so RC direction is evaluated on the
-   // SAME bar as the RMC filter, the brick direction, and candleClose.
-   // (Reading shift 0 - the forming bar - misaligns RC from whatever else
-   // was evaluated on the already-closed bar, which historically made
-   // trades land on the wrong side of the filter's actual test bar.)
-   double blue   = GetRC_BlueLine(1);
-   double maroon = GetRC_MaroonLine(1);
+   // Reads shift 0 -- the current, fully-formed brick, same as RMC, brick
+   // direction, and candleClose all now read, keeping every signal aligned to
+   // the SAME brick. This used to read shift 1 specifically because shift 0
+   // could return EMPTY_VALUE for a moment right as a brand new brick
+   // appears -- "Range Cycle Indicator" is a SEPARATE program (read via
+   // iCustom), and its own buffer can take a beat to catch up to a brick
+   // that already exists in the chart's raw price data. That's a real risk,
+   // but it's a startup-race problem, not a reason to permanently trade one
+   // brick behind -- OnTick()'s new-bar handler now waits for this buffer to
+   // actually populate before evaluating anything (see the settle-retry
+   // right after IsNewBar() returns true), so shift 0 is safe to read here.
+   double blue   = GetRC_BlueLine(0);
+   double maroon = GetRC_MaroonLine(0);
    bool   blueOn   = (blue   != EMPTY_VALUE && blue   != 0.0);
    bool   maroonOn = (maroon != EMPTY_VALUE && maroon != 0.0);
 
@@ -698,14 +704,19 @@ double GetRC_MaroonLine(int shift)
    return iCustom(NULL, 0, "Range Cycle Indicator", 0, 0, RC_Period, 2, shift);
 }
 
-// Direction of the just-closed brick (shift 1).
+// Direction of the current, fully-formed brick (shift 0). Renko bricks are
+// never partially built -- a brick either exists complete and final, or it
+// doesn't exist yet -- so unlike a time-based candle, shift 0 here carries
+// no "still forming, don't trust it yet" risk. Reading shift 1 (one brick
+// stale) was the actual cause of trades evaluating and entering one brick
+// behind the brick that genuinely triggered them.
 // Returns +1 for a bull brick (Close>Open), -1 for bear (Close<Open), 0 flat.
 // On Renko this is the brick colour: the confirmation the trade direction
 // actually printed one more brick our way after the RC crossover.
 int ClosedBrickDir()
 {
-   double o = Open[1];
-   double c = Close[1];
+   double o = Open[0];
+   double c = Close[0];
    if(c > o) return  1;
    if(c < o) return -1;
    return 0;
@@ -797,18 +808,23 @@ double RMC_GetMomentumDecay(int i, int total)
 }
 
 // GetRMC_Value(): returns RMC's raw oscillator value (-1..+1) for the
-// just-closed bar (shift 1), matching how GetRC_Value() always evaluates
-// shift 1. Sign is what Zeus's entry/exit rules act on: >=0 is RMC's
-// "Bull" (blue) line, <0 is its "Bear" (red/tomato) line -- exactly the
-// two colored buffers RMC.mq4 itself plots.
+// current, fully-formed brick (shift 0), matching how GetRC_Value() now
+// evaluates shift 0 too. This is Zeus's OWN self-contained calculation --
+// computed straight from Close[]/Open[]/Volume[]/Bars, which this EA already
+// has fully updated the instant a new brick appears (no separate indicator
+// program to wait on) -- so unlike RC, there's no buffer-catch-up race here;
+// shift 0 has always been safe for this function specifically. Sign is what
+// Zeus's entry/exit rules act on: >=0 is RMC's "Bull" (blue) line, <0 is its
+// "Bear" (red/tomato) line -- exactly the two colored buffers RMC.mq4 itself
+// plots.
 double GetRMC_Value()
 {
    // Cache: compute once per bar; entry and exit both call this on the same bar
-   if(g_rmcCacheTime == Time[1] && g_rmcCacheTime != 0)
+   if(g_rmcCacheTime == Time[0] && g_rmcCacheTime != 0)
       return g_rmcCacheVal;
 
    int total = Bars;
-   int i = 1; // just-closed bar
+   int i = 0; // current, fully-formed brick
 
    if(i + RMC_RSI_MaxPeriod * 3 >= total) return EMPTY_VALUE; // insufficient history yet
 
@@ -838,7 +854,7 @@ double GetRMC_Value()
                 * MathMin(decay, 1.0);
    rmc = MathMax(-1.0, MathMin(1.0, rmc));
 
-   g_rmcCacheTime       = Time[1];
+   g_rmcCacheTime       = Time[0];
    g_rmcCacheVal        = rmc;
    g_rmcCacheRun        = run;
    g_rmcCacheRsiPeriod  = rsiPeriod;
@@ -1204,10 +1220,10 @@ void OpenAll(int type, int slPoints, int &tpPoints[])
    // This is the actual fill price the broker uses
    double entry = NormalizeDouble((type == OP_BUY) ? Ask : Bid, Digits);
 
-   // CandleClose: the CLOSING PRICE of the signal brick (Close[1] at candle close)
+   // CandleClose: the CLOSING PRICE of the signal brick (Close[0], the current
+   // fully-formed brick -- Renko bricks are never partial, so this is safe)
    // ALL SL, TP and BE levels are calculated from this price - not the fill price
-   // This is the price the arrow appeared on and the decision was made
-   double candleClose = NormalizeDouble(Close[1], Digits);
+   double candleClose = NormalizeDouble(Close[0], Digits);
 
    if(Trade1Enabled) OpenTrade(type, entry, candleClose, tpPoints[0], "T1", T1_Weight, slPoints);
    if(Trade2Enabled) OpenTrade(type, entry, candleClose, tpPoints[1], "T2", T2_Weight, slPoints);
@@ -1260,7 +1276,7 @@ bool ExistsT1()
 // +------------------------------------------------------------------+
 void CheckVirtualSL()
 {
-   double candleClose = Close[1];
+   double candleClose = Close[0];
    int    qTickets[10];
    int    qCount = 0;
 
@@ -1331,7 +1347,7 @@ void CheckVirtualSL()
 // +------------------------------------------------------------------+
 void CheckVirtualTP()
 {
-   double candleClose = Close[1];
+   double candleClose = Close[0];
    int    qTickets[10];
    int    qCount = 0;
 
@@ -1494,7 +1510,7 @@ void OnTick()
    // vSL/vTP were already restored (from file, GlobalVariables, or the
    // OrderOpenPrice fallback) by RestoreStateFromGlobalVariables() in
    // OnInit() before OnTick() ever runs, and this only ever compares them
-   // against Close[1] (the last FULLY CLOSED brick), never live Bid/Ask -
+   // against Close[0] (the current, fully-formed brick), never live Bid/Ask -
    // so there is no "chart might still be rebuilding" risk here the way
    // there is for new entries and the discretionary RC-flip exit below.
    // ================================================================
@@ -1669,8 +1685,23 @@ void OnTick()
    bool newBar = IsNewBar();
    if(!newBar) return;
 
+   // Settle-retry: a brand new brick has just appeared (Time[0] changed).
+   // Zeus's own Close[]/Open[]/Volume[]/Bars are already fully updated at
+   // this instant, but "Range Cycle Indicator" is a SEPARATE program read
+   // via iCustom(), and its own buffer for this brand new brick can take a
+   // moment to populate. Wait briefly for it rather than reading a stale/
+   // EMPTY_VALUE shift-0 RC read and falling back to a one-brick-old bar --
+   // same pattern already used once at OnInit() for the same reason.
+   for(int settleAttempt = 0; settleAttempt < 10; settleAttempt++)
+   {
+      double blueCheck   = GetRC_BlueLine(0);
+      double maroonCheck = GetRC_MaroonLine(0);
+      if(blueCheck != EMPTY_VALUE || maroonCheck != EMPTY_VALUE) break;
+      Sleep(20);
+   }
+
    // --- Zeus AI: one equity snapshot per closed brick, same cadence training used ---
-   AI_SaveEquitySnapshot(Time[1], AccountEquity());
+   AI_SaveEquitySnapshot(Time[0], AccountEquity());
 
    // --- Break-even ---
    CheckBreakEven();
@@ -1808,7 +1839,7 @@ void OnTick()
          else if(dRcD > 0 && dRmcD > 0) dDir =  1;
       }
       else dDir = dRcD;
-      Print("ZEUS-ENTRY-STATE bar=", TimeToStr(Time[1], TIME_DATE|TIME_MINUTES),
+      Print("ZEUS-ENTRY-STATE bar=", TimeToStr(Time[0], TIME_DATE|TIME_MINUTES),
             " rcDir=", dRcD, " brickDir=", dBr,
             " rmc=", (dRmc==EMPTY_VALUE?"EMPTY":DoubleToStr(dRmc,4)),
             " rmcDir=", dRmcD,
@@ -1843,10 +1874,10 @@ void OnTick()
          if(rcDir < 0 && rmcDir < 0)      entryDir = -1; // both clearly below zero -> sell
          else if(rcDir > 0 && rmcDir > 0) entryDir =  1; // both clearly above zero -> buy
          // DIAGNOSTIC - port's RMC read vs. what RMC.mq4 itself would plot.
-         Print("ZEUS-FILTER[PORT] bar=", TimeToStr(Time[1], TIME_DATE|TIME_MINUTES),
+         Print("ZEUS-FILTER[PORT] bar=", TimeToStr(Time[0], TIME_DATE|TIME_MINUTES),
+               " c0=", DoubleToStr(Close[0],Digits),
                " c1=", DoubleToStr(Close[1],Digits),
-               " c2=", DoubleToStr(Close[2],Digits),
-               " c10=", DoubleToStr(Close[10],Digits),
+               " c9=", DoubleToStr(Close[9],Digits),
                " bars=", Bars,
                " rcDir=", rcDir, " rmcDir=", rmcDir, " entryDir=", entryDir,
                " rmc=", (rmc==EMPTY_VALUE?"EMPTY":DoubleToStr(rmc,4)),
