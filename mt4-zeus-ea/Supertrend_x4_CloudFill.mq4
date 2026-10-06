@@ -28,7 +28,7 @@
 #property indicator_width1  2
 #property indicator_label2  "Set1 Down"
 #property indicator_type2   DRAW_LINE
-#property indicator_color2  clrBlack
+#property indicator_color2  clrRed
 #property indicator_width2  2
 #property indicator_label3  "Set1 Buy"
 #property indicator_type3   DRAW_ARROW
@@ -36,7 +36,7 @@
 #property indicator_width3  2
 #property indicator_label4  "Set1 Sell"
 #property indicator_type4   DRAW_ARROW
-#property indicator_color4  clrBlack
+#property indicator_color4  clrRed
 #property indicator_width4  2
 
 #property indicator_label5  "Set2 Up"
@@ -45,7 +45,7 @@
 #property indicator_width5  3
 #property indicator_label6  "Set2 Down"
 #property indicator_type6   DRAW_LINE
-#property indicator_color6  clrBlack
+#property indicator_color6  clrRed
 #property indicator_width6  3
 #property indicator_label7  "Set2 Buy"
 #property indicator_type7   DRAW_ARROW
@@ -53,7 +53,7 @@
 #property indicator_width7  2
 #property indicator_label8  "Set2 Sell"
 #property indicator_type8   DRAW_ARROW
-#property indicator_color8  clrBlack
+#property indicator_color8  clrRed
 #property indicator_width8  2
 
 #property indicator_label9  "Set3 Up"
@@ -62,7 +62,7 @@
 #property indicator_width9  3
 #property indicator_label10 "Set3 Down"
 #property indicator_type10  DRAW_LINE
-#property indicator_color10 clrBlack
+#property indicator_color10 clrRed
 #property indicator_width10 3
 #property indicator_label11 "Set3 Buy"
 #property indicator_type11  DRAW_ARROW
@@ -70,7 +70,7 @@
 #property indicator_width11 2
 #property indicator_label12 "Set3 Sell"
 #property indicator_type12  DRAW_ARROW
-#property indicator_color12 clrBlack
+#property indicator_color12 clrRed
 #property indicator_width12 2
 
 #property indicator_label13 "Set4 Up"
@@ -79,7 +79,7 @@
 #property indicator_width13 3
 #property indicator_label14 "Set4 Down"
 #property indicator_type14  DRAW_LINE
-#property indicator_color14 clrBlack
+#property indicator_color14 clrRed
 #property indicator_width14 3
 #property indicator_label15 "Set4 Buy"
 #property indicator_type15  DRAW_ARROW
@@ -87,7 +87,7 @@
 #property indicator_width15 2
 #property indicator_label16 "Set4 Sell"
 #property indicator_type16  DRAW_ARROW
-#property indicator_color16 clrBlack
+#property indicator_color16 clrRed
 #property indicator_width16 2
 
 input int    Set1_Period      = 10;
