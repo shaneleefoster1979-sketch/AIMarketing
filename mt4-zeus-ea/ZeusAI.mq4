@@ -92,7 +92,7 @@ void LogTrades()
 // |   Zeus EA                                                         |
 // |   VIRTUAL SL/TP + PERSISTENT STATE (survives MT4 restart)        |
 // |                                                                  |
-// |   Entry: RC AND Renko Momentum Cycle (RMC) must AGREE in sign,   |
+// |   Entry: RC AND the Jerk Indicator must AGREE in sign,           |
 // |   confirmed by brick direction, on candle close.                 |
 // |                                                                  |
 // |   All SL, BE, and TP checks fire at candle close only.          |
@@ -125,7 +125,7 @@ void LogTrades()
 // direct, numerically-verified port of the trained PyTorch weights -- see
 // export_dqn_to_mql4.py in the backtest repo for the verification.
 // +------------------------------------------------------------------+
-input bool   UseZeusAI            = true;   // Off = fall back to fixed StopLossPoints/TP1-4 exactly as before
+input bool   UseZeusAI            = false;  // OFF until retrained on jerk_value -- current zeus_ai_weights.mqh was trained on rmc_value, now removed. Off = fixed StopLossPoints/TP1-4.
 input double AI_QuotaTargetPct    = 10.0;   // Trailing-window equity growth target %, matches training
 input int    AI_QuotaWindowDays   = 30;     // Trailing window length in days, matches training
 
@@ -148,15 +148,15 @@ input bool   Trade2Enabled         = true;
 input bool   Trade3Enabled         = true;
 input bool   Trade4Enabled         = true;
 input int    RC_Period             = 7;     // Range Cycle period
-input bool   UseRMCFilter          = true;  // Require Renko Momentum Cycle to AGREE with RC (both blue = buy, both red/maroon = sell)
-input int    RMC_MinRunLength      = 2;     // Must match Renko Momentum Cycle MinRunLength input
-input int    RMC_MaxRunLookback    = 10;    // Must match Renko Momentum Cycle MaxRunLookback input
-input int    RMC_RSI_MinPeriod     = 7;     // Must match Renko Momentum Cycle RSI_MinPeriod input
-input int    RMC_RSI_MaxPeriod     = 21;    // Must match Renko Momentum Cycle RSI_MaxPeriod input
-input int    RMC_CycleMemory       = 5;     // Must match Renko Momentum Cycle CycleMemory input
-input double RMC_MinConfirmMagnitude = 0.03; // RMC must be at least this far from zero (of its -1..+1 range) to count as a real red/blue reading, not noise sitting on the zero line -- raised from 0.02 to 0.03 live after a trade still entered on a signal so weak the RMC line remained invisible on the chart
+input bool   UseJerkFilter         = true;  // Require Jerk Indicator to AGREE with RC (Jerk<0=buy side, Jerk>0=sell side -- INVERTED sign vs RC, see Jerk_Dir())
+input string Jerk_IndicatorName    = "Jerk Indicator"; // exact name iCustom() loads by -- include a subfolder prefix (e.g. "Market\\Jerk Indicator") if it's not directly in MQL4/Indicators
+input int    Jerk_PolarityCriterion = 0;    // confirmed via Jerk_Probe.mq4: matches "Signal Polarity Criterion" = Jerk_Acceleration
+input int    Jerk_PriceData         = 1;    // confirmed via Jerk_Probe.mq4: matches "Select Price Data" = Bar_Close
+input int    Jerk_LPD_Period        = 32;   // must match the real Jerk Indicator's LPD Period input
+input int    Jerk_Buffer            = 5;    // confirmed buffer index -- the only colored (DeepSkyBlue) line
+input double Jerk_ClampMax          = 25.0; // raw value is clamped to +-this before use, matching the indicator's own fixed scale
 input bool   AllowNewEntries       = true;  // Uncheck to pause entries after manual close
-input bool   TrustInitialDirection = false; // Set true on THIS attach only when you judge the current RC/RMC direction is already valid (e.g. price resuming its main trend) -- skips waiting for RC or RMC to flip away from their reading at attach before the first trade. Set back to false afterward; this is a one-time-per-attach manual call, not a standing setting.
+input bool   TrustInitialDirection = false; // Set true on THIS attach only when you judge the current RC/Jerk direction is already valid (e.g. price resuming its main trend) -- skips waiting for RC or Jerk to flip away from their reading at attach before the first trade. Set back to false afterward; this is a one-time-per-attach manual call, not a standing setting.
 input bool   BypassRenkoResetGate   = false; // TESTER ONLY: skip the Renko-reset unlock handshake (leave false for live)
 input int    RenkoResetTimeoutSeconds = 60; // Auto-unlock entries if Renko Reset script hasn't run within this many seconds
 input double MaxLotsPerTrade       = 50.0;  // Broker max lot size per trade
@@ -181,15 +181,15 @@ bool T1_WasOpen         = false;
 // knownTickets array tracks open trades for manual close detection
 
 // ReadyToTrade: prevents mid-cycle entry on attach.
-// Records RC AND RMC direction at load. Arms (OR logic) as soon as
-// EITHER RC or RMC has moved to the OPPOSITE direction from its own
+// Records RC AND Jerk direction at load. Arms (OR logic) as soon as
+// EITHER RC or Jerk has moved to the OPPOSITE direction from its own
 // load-time reading at least once since load.
 bool ReadyToTrade         = false;
 int  InitialRC_Direction  = 0;
-int  InitialRMC_Direction = 0;
+int  InitialJerk_Direction = 0;
 
 // Entry and exit are gated by the just-closed brick direction (matching the
-// trade) and the RMC filter. No multi-brick confirmation state is needed.
+// trade) and the Jerk filter. No multi-brick confirmation state is needed.
 
 // Startup lockout - prevents acting on corrupted Renko after restart
 bool     StartupLockout    = false;
@@ -208,7 +208,7 @@ datetime NoTradesGateStartTime = 0;
 // Tracks open tickets - if one disappears without EA closing it = manual close
 bool     WaitingForNewCycle    = false;
 int      CycleWaitDirection    = 0;
-int      RMCCycleWaitDirection = 0;
+int      JerkCycleWaitDirection = 0;
 bool     CycleSawOpposite      = false;
 int      knownTickets[];
 int      knownTicketCount      = 0;
@@ -510,11 +510,11 @@ void RestoreStateFromGlobalVariables()
 // +------------------------------------------------------------------+
 int OnInit()
 {
-   Print("=== ZEUS AI BUILD 2026-08-26 | RC + RMC dual-agreement direction | Trained DQN picks per-trade SL/TP profile ===");
+   Print("=== ZEUS AI BUILD 2026-10-14 | RC + Jerk dual-agreement direction | AI temporarily OFF pending Jerk retrain ===");
    lastBarTime          = 0;
    ReadyToTrade         = false;
    InitialRC_Direction  = 0;
-   InitialRMC_Direction = 0;
+   InitialJerk_Direction = 0;
    RestoreStateFromGlobalVariables();
    AI_RefBalanceFile = "ZeusAI_refbalance_" + IntegerToString(MagicNumber) + ".txt";
    AI_EquityFile     = "ZeusAI_equity_"     + IntegerToString(MagicNumber) + ".csv";
@@ -522,12 +522,22 @@ int OnInit()
    AI_LoadEquityHistory();
 
    // Wait for indicator buffers to initialize (up to 20 retries)
-   // Prevents EMPTY_VALUE reads immediately after attach/recompile
+   // Prevents EMPTY_VALUE reads immediately after attach/recompile.
+   // Jerk, like RC, is read via iCustom() from a SEPARATE compiled program,
+   // so it gets the same warmup retry RC does (unlike the old RMC port,
+   // which was Zeus's own self-contained calc with no iCustom warmup risk).
    double rc = 0;
    for(int attempt = 0; attempt < 20; attempt++)
    {
       rc = GetRC_Value();
       if(rc != 0 && rc != EMPTY_VALUE) break;
+      Sleep(100);
+   }
+   double jerkWarmup = 0;
+   for(int jAttempt = 0; jAttempt < 20; jAttempt++)
+   {
+      jerkWarmup = GetJerk_Value(1);
+      if(jerkWarmup != EMPTY_VALUE) break;
       Sleep(100);
    }
 
@@ -582,14 +592,11 @@ int OnInit()
    else if(rc < 0)  InitialRC_Direction = -1;
    else             InitialRC_Direction =  0;
 
-   // Record the current RMC direction at load time too (OR logic with RC
-   // below -- either one flipping is enough to arm). GetRMC_Value() reads
-   // directly off Close[]/Open[]/Volume[] (no iCustom buffer warmup
-   // involved), so no retry loop is needed here the way there is for RC
-   // above; EMPTY_VALUE (insufficient bar history) is treated the same as
-   // a neutral reading.
-   double rmcAtLoad = GetRMC_Value();
-   InitialRMC_Direction = RMC_Dir(rmcAtLoad);
+   // Record the current Jerk direction at load time too (OR logic with RC
+   // below -- either one flipping is enough to arm). Already warmed up
+   // above, same as RC.
+   double jerkAtLoad = GetJerk_Value(1);
+   InitialJerk_Direction = Jerk_Dir(jerkAtLoad);
 
    // Arm immediately if EITHER side was neutral at load -- nothing to wait
    // for on that side, mirrors RC's own original immediate-arm behavior,
@@ -598,19 +605,19 @@ int OnInit()
    {
       ReadyToTrade = true;
       Print("EA: ReadyToTrade immediately - TrustInitialDirection is on for this attach. "
-            "RC dir=", InitialRC_Direction, " RMC dir=", InitialRMC_Direction,
+            "RC dir=", InitialRC_Direction, " Jerk dir=", InitialJerk_Direction,
             " will be traded as-is without waiting for a flip. Remember to turn this back off.");
    }
-   else if(InitialRC_Direction == 0 || InitialRMC_Direction == 0)
+   else if(InitialRC_Direction == 0 || InitialJerk_Direction == 0)
    {
       ReadyToTrade = true;
       Print("EA: ReadyToTrade immediately - RC dir=", InitialRC_Direction,
-            " RMC dir=", InitialRMC_Direction, " (one or both neutral on load).");
+            " Jerk dir=", InitialJerk_Direction, " (one or both neutral on load).");
    }
    else
    {
       Print("EA: RC direction on load = ", InitialRC_Direction,
-            ", RMC direction on load = ", InitialRMC_Direction,
+            ", Jerk direction on load = ", InitialJerk_Direction,
             " - waiting for EITHER to flip before entering.");
    }
 
@@ -718,158 +725,36 @@ int ClosedBrickDir()
    return 0;
 }
 
-// Internal port of Renko Momentum Cycle (RMC) -- ported directly from
-// RMC.mq4's GetBrickRun/EstimateCycleLength/GetMomentumDecay/CalcRMC,
-// renamed RMC_* to avoid symbol collisions with anything else in this file.
-// Same rationale as the old Synth port: computing this internally off the
-// SAME Close[]/Open[]/Volume[] series Zeus itself reads means no iCustom
-// divergence between this EA's evaluation and whatever RMC.mq4 plots if
-// you also run it as a visible indicator -- and it behaves identically in
-// the Strategy Tester and live. RMC.mq4's own math is itself non-repainting
-// (verified by code review: every helper only ever looks at bar i and bars
-// OLDER than i, never anything newer) -- ported faithfully, not approximated.
-datetime g_rmcCacheTime = 0;
-double   g_rmcCacheVal  = 0.0;
-int      g_rmcCacheRun  = 0;       // diagnostics: brick run length at cache time
-int      g_rmcCacheRsiPeriod = 0;  // diagnostics: adaptive RSI period used
-double   g_rmcCacheDecay = 0.0;    // diagnostics: momentum decay factor used
-
-int RMC_GetBrickRun(int i, int total, double &runVol)
+// GetJerk_Value(): reads the Jerk Indicator's confirmed signal buffer via
+// iCustom(), same iCustom-dependency pattern as GetRC_BlueLine/MaroonLine --
+// Jerk is a SEPARATE compiled (EX4-only, no source) program, so like RC it
+// gets the OnInit() warmup retry and is read at shift 1 (last fully closed
+// brick), never shift 0 (live/still-forming on this chart).
+// Clamped to +-Jerk_ClampMax as a safety bound against any extreme/garbage
+// read -- the live indicator's own display is fixed-scaled the same way.
+double GetJerk_Value(int shift)
 {
-   if(i >= total) return 0;
-   bool isUp = (Close[i] > Open[i]);
-   int  count = 0;
-   runVol = 0;
-   for(int k = i; k < total && count < RMC_MaxRunLookback; k++)
-   {
-      bool kUp = (Close[k] > Open[k]);
-      if(kUp != isUp) break;
-      count++;
-      runVol += (double)Volume[k];
-   }
-   return isUp ? count : -count;
+   double raw = iCustom(NULL, 0, Jerk_IndicatorName,
+                         Jerk_PolarityCriterion, Jerk_PriceData, Jerk_LPD_Period,
+                         Jerk_Buffer, shift);
+   if(raw == EMPTY_VALUE) return EMPTY_VALUE;
+   return MathMax(-Jerk_ClampMax, MathMin(Jerk_ClampMax, raw));
 }
 
-int RMC_EstimateCycleLength(int i, int total)
+// Jerk_Dir(): the ONE place that turns a raw GetJerk_Value() reading into a
+// +1/-1/0 direction, everywhere in this file. Jerk's sign convention is the
+// OPPOSITE of RC's: Jerk < 0 confirms BUY, Jerk > 0 confirms SELL (per the
+// live strategy as specified) -- this function is where that inversion
+// lives, so every caller downstream can keep using the same
+// "+1 = buy-confirmed, -1 = sell-confirmed" contract RC and the old RMC
+// both used, with no sign-flip logic duplicated elsewhere in the file.
+// Pure sign-based by design (no minimum-magnitude floor) -- only the
+// +-Jerk_ClampMax safety bound applies, already done in GetJerk_Value().
+int Jerk_Dir(double jerk)
 {
-   int  runCount = 0;
-   int  totalLen = 0;
-   int  k        = i;
-   bool lastDir  = (Close[i] > Open[i]);
-   int  runLen   = 0;
-   while(k < total && runCount < RMC_CycleMemory * 2)
-   {
-      bool kUp = (Close[k] > Open[k]);
-      if(kUp == lastDir) { runLen++; }
-      else
-      {
-         if(runLen >= RMC_MinRunLength) { totalLen += runLen; runCount++; }
-         lastDir = kUp; runLen = 1;
-      }
-      k++;
-   }
-   if(runCount == 0) return (RMC_RSI_MinPeriod + RMC_RSI_MaxPeriod) / 2;
-   double avgRun = (double)totalLen / runCount;
-   int    cycle  = (int)MathRound(avgRun * 2);
-   if(cycle < RMC_RSI_MinPeriod) cycle = RMC_RSI_MinPeriod;
-   if(cycle > RMC_RSI_MaxPeriod) cycle = RMC_RSI_MaxPeriod;
-   return cycle;
-}
-
-double RMC_GetMomentumDecay(int i, int total)
-{
-   if(i >= total) return 1.0;
-   bool   curDir  = (Close[i] > Open[i]);
-   double curVol  = 0;
-   int    curLen  = 0;
-   for(int k = i; k < total; k++)
-   {
-      if((Close[k] > Open[k]) != curDir) break;
-      curLen++; curVol += (double)Volume[k];
-   }
-   int  k2     = i + curLen;
-   bool oppDir = !curDir;
-   while(k2 < total && (Close[k2] > Open[k2]) == oppDir) k2++;
-   double prevVol = 0;
-   int    prevLen = 0;
-   for(int k = k2; k < total; k++)
-   {
-      if((Close[k] > Open[k]) != curDir) break;
-      prevLen++; prevVol += (double)Volume[k];
-   }
-   if(prevLen == 0 || prevVol == 0) return 1.0;
-   double lenRatio = (double)curLen / prevLen;
-   double volRatio = (curVol / curLen) / (prevVol / prevLen);
-   return MathMin(lenRatio * 0.5 + volRatio * 0.5, 1.5);
-}
-
-// GetRMC_Value(): returns RMC's raw oscillator value (-1..+1) for the
-// just-closed bar (shift 1), matching how GetRC_Value() and ClosedBrickDir()
-// evaluate shift 1. Even though this is Zeus's OWN self-contained calculation
-// off Close[]/Open[]/Volume[]/Bars with no iCustom dependency, shift 0 on
-// this chart is a live, still-forming brick (confirmed directly against the
-// live terminal), so it is not a stable, final reading yet -- shift 1 is the
-// last brick that has actually finished. Sign is what Zeus's entry/exit
-// rules act on: >=0 is RMC's "Bull" (blue) line, <0 is its "Bear" (red/
-// tomato) line -- exactly the two colored buffers RMC.mq4 itself plots.
-double GetRMC_Value()
-{
-   // Cache: compute once per bar; entry and exit both call this on the same bar
-   if(g_rmcCacheTime == Time[1] && g_rmcCacheTime != 0)
-      return g_rmcCacheVal;
-
-   int total = Bars;
-   int i = 1; // just-closed bar
-
-   if(i + RMC_RSI_MaxPeriod * 3 >= total) return EMPTY_VALUE; // insufficient history yet
-
-   double runVol = 0;
-   int    run    = RMC_GetBrickRun(i, total, runVol);
-   if(MathAbs(run) < RMC_MinRunLength) return EMPTY_VALUE; // no qualifying run at this bar
-
-   int    rsiPeriod = RMC_EstimateCycleLength(i, total);
-   double rsi       = iRSI(NULL, 0, rsiPeriod, PRICE_CLOSE, i);
-   if(rsi == EMPTY_VALUE) return EMPTY_VALUE;
-   double rsiNorm   = (rsi - 50.0) / 50.0;
-   double decay     = RMC_GetMomentumDecay(i, total);
-
-   double runStrength = MathMin(MathAbs(run), RMC_MaxRunLookback);
-   double runNorm      = runStrength / RMC_MaxRunLookback;
-   if(run < 0) runNorm = -runNorm;
-
-   double avgVol = 0; int vCnt = 0;
-   for(int k = i; k < i + rsiPeriod && k < total; k++)
-      { avgVol += (double)Volume[k]; vCnt++; }
-   if(vCnt > 0) avgVol /= vCnt;
-   double volNorm = (avgVol > 0 && MathAbs(run) > 0)
-                    ? MathMin((runVol / MathAbs(run)) / avgVol, 2.0) : 1.0;
-   volNorm = (volNorm - 1.0) * 0.3 + 1.0;
-
-   double rmc = (rsiNorm * 0.5 + runNorm * 0.35 + (volNorm - 1.0) * 0.15)
-                * MathMin(decay, 1.0);
-   rmc = MathMax(-1.0, MathMin(1.0, rmc));
-
-   g_rmcCacheTime       = Time[1];
-   g_rmcCacheVal        = rmc;
-   g_rmcCacheRun        = run;
-   g_rmcCacheRsiPeriod  = rsiPeriod;
-   g_rmcCacheDecay      = decay;
-   return rmc;
-}
-
-// RMC_Dir(): the ONE place that turns a raw GetRMC_Value() reading into a
-// +1/-1/0 direction, everywhere in this file. A bare sign check treats
-// anything nonzero as a confirmed reading -- including values sitting a
-// hair off the zero line (e.g. rmc=-0.0414, the exact value that let a set
-// of sell entries through on a reading barely distinguishable from flat).
-// This requires the value to actually clear RMC_MinConfirmMagnitude before
-// it counts as clearly red or clearly blue; anything closer to zero than
-// that, plus EMPTY_VALUE, comes back 0 (no reading) same as before.
-int RMC_Dir(double rmc)
-{
-   if(rmc == EMPTY_VALUE) return 0;
-   if(rmc >=  RMC_MinConfirmMagnitude) return  1;
-   if(rmc <= -RMC_MinConfirmMagnitude) return -1;
+   if(jerk == EMPTY_VALUE) return 0;
+   if(jerk <  0) return  1; // Jerk below zero -> buy side
+   if(jerk >  0) return -1; // Jerk above zero -> sell side
    return 0;
 }
 
@@ -1058,18 +943,24 @@ bool AI_DecodeAction(int action, int &slPoints, int &tp0, int &tp1, int &tp2, in
    return true;
 }
 
-// Builds the same 5 features training used (rc_value, rmc_value,
+// *** NOT CURRENTLY LIVE *** UseZeusAI is OFF (see input above) until the
+// model is retrained on jerk_value in place of rmc_value -- zeus_ai_weights.mqh
+// still holds the OLD RMC-trained weights, which have never seen a
+// -25..+25-scale input in this feature slot. Do not set UseZeusAI=true
+// again until a newly retrained zeus_ai_weights.mqh has been dropped in.
+//
+// Builds the same 5 features training used (rc_value, jerk_value,
 // trailing-pace-vs-target, log-equity-ratio, in-position flag -- always
 // 0 here since this is only ever called when CountTrades()==0, exactly
 // as in training) and returns the greedy (argmax) action.
 int AI_Decide()
 {
-   // rmc_value feature is the raw reading unconditionally -- training never
-   // gated this on UseRMCFilter, only the entry GATE (already evaluated
-   // before AI_Decide() is ever called) depends on that setting.
-   double rc     = GetRC_Value();
-   double rmcRaw = GetRMC_Value();
-   double rmc    = (rmcRaw == EMPTY_VALUE) ? 0.0 : rmcRaw;
+   // jerk_value feature is the raw (clamped) reading unconditionally --
+   // training never gated this on UseJerkFilter, only the entry GATE
+   // (already evaluated before AI_Decide() is ever called) depends on that.
+   double rc      = GetRC_Value();
+   double jerkRaw = GetJerk_Value(1);
+   double jerk    = (jerkRaw == EMPTY_VALUE) ? 0.0 : jerkRaw;
 
    double equity      = AccountEquity();
    double trailingRet  = AI_TrailingReturn(TimeCurrent(), equity);
@@ -1079,7 +970,7 @@ int AI_Decide()
 
    double x[5];
    x[0] = rc;
-   x[1] = rmc;
+   x[1] = jerk;
    x[2] = pace;
    x[3] = logEq;
    x[4] = inPos;
@@ -1094,7 +985,7 @@ int AI_Decide()
       if(q[a] > bestQ) { bestQ = q[a]; bestAction = a; }
    }
 
-   Print("EA: Zeus AI decide -- rc=", DoubleToStr(rc,4), " rmc=", DoubleToStr(rmc,4),
+   Print("EA: Zeus AI decide -- rc=", DoubleToStr(rc,4), " jerk=", DoubleToStr(jerk,4),
          " pace=", DoubleToStr(pace,4), " logEq=", DoubleToStr(logEq,4),
          " -> action=", bestAction);
    return bestAction;
@@ -1516,7 +1407,7 @@ void OnTick()
    // ================================================================
    // GATE 2: Startup lockout (2 real minutes after restart with open
    // trades) - blocks NEW ENTRIES and the discretionary RC-flip exit
-   // only, since those trust freshly-(re)computed RC/RMC indicator
+   // only, since those trust freshly-(re)computed RC/Jerk indicator
    // direction, which can't yet be trusted if the Renko chart is still
    // being rebuilt. Existing trades' virtual SL/TP were already checked
    // above, unconditionally, before this gate runs.
@@ -1601,17 +1492,17 @@ void OnTick()
          if(!stillOpen)
          {
             // This ticket disappeared without EA removing it = manual close
-            double rcAtClose  = GetRC_Value();
-            double rmcAtClose = GetRMC_Value();
-            WaitingForNewCycle    = true;
-            CycleWaitDirection    = (rcAtClose > 0) ? 1 : -1;
-            RMCCycleWaitDirection = RMC_Dir(rmcAtClose);
+            double rcAtClose   = GetRC_Value();
+            double jerkAtClose = GetJerk_Value(1);
+            WaitingForNewCycle     = true;
+            CycleWaitDirection     = (rcAtClose > 0) ? 1 : -1;
+            JerkCycleWaitDirection = Jerk_Dir(jerkAtClose);
             ReadyToTrade       = false;
             knownTicketCount   = 0;
             ArrayResize(knownTickets, 0);
             Print("EA: Manual close detected (ticket ", knownTickets[ki],
                   " missing). RC dir=", CycleWaitDirection,
-                  " RMC dir=", RMCCycleWaitDirection,
+                  " Jerk dir=", JerkCycleWaitDirection,
                   ". Waiting for EITHER to flip before re-entry.");
             break;
          }
@@ -1619,7 +1510,7 @@ void OnTick()
    }
 
    // ================================================================
-   // NEW CYCLE WAIT: blocks entries until EITHER RC or RMC flips direction
+   // NEW CYCLE WAIT: blocks entries until EITHER RC or Jerk flips direction
    // once (OR logic, same rule as ReadyToTrade on attach) -- either one
    // flipping is enough, they no longer both have to.
    // ================================================================
@@ -1629,17 +1520,17 @@ void OnTick()
       int    rcDirNow       = (rcCycle > 0) ? 1 : (rcCycle < 0) ? -1 : 0;
       bool   rcCycleFlipped = (rcDirNow != 0 && rcDirNow != CycleWaitDirection);
 
-      double rmcCycle       = GetRMC_Value();
-      int    rmcDirNow       = RMC_Dir(rmcCycle);
-      bool   rmcCycleFlipped = (rmcDirNow != 0) && (rmcDirNow != RMCCycleWaitDirection);
+      double jerkCycle       = GetJerk_Value(1);
+      int    jerkDirNow       = Jerk_Dir(jerkCycle);
+      bool   jerkCycleFlipped = (jerkDirNow != 0) && (jerkDirNow != JerkCycleWaitDirection);
 
-      if(rcCycleFlipped || rmcCycleFlipped)
+      if(rcCycleFlipped || jerkCycleFlipped)
       {
          WaitingForNewCycle = false;
          ReadyToTrade       = true;
          string cycleReason = "";
-         if(rcCycleFlipped)  cycleReason += "RC flipped to " + IntegerToString(rcDirNow) + ". ";
-         if(rmcCycleFlipped) cycleReason += "RMC flipped to " + IntegerToString(rmcDirNow) + ".";
+         if(rcCycleFlipped)   cycleReason += "RC flipped to " + IntegerToString(rcDirNow) + ". ";
+         if(jerkCycleFlipped) cycleReason += "Jerk flipped to " + IntegerToString(jerkDirNow) + ".";
          Print("EA: ", cycleReason, " Manual close cycle reset complete. Re-entry allowed.");
       }
       // Always return while waiting - no SL/TP/entry while waiting for cycle
@@ -1648,7 +1539,7 @@ void OnTick()
    }
 
    // ================================================================
-   // READY TO TRADE: arms (OR logic) as soon as EITHER RC or RMC changes
+   // READY TO TRADE: arms (OR logic) as soon as EITHER RC or Jerk changes
    // from its own initial-load direction -- either one flipping is
    // enough, they no longer both have to.
    // ================================================================
@@ -1658,18 +1549,18 @@ void OnTick()
       int    rcDirNow = (rcNow > 0) ? 1 : (rcNow < 0) ? -1 : 0;
       bool   rcFlipped = (rcDirNow != 0 && rcDirNow != InitialRC_Direction);
 
-      double rmcNow    = GetRMC_Value();
-      int    rmcDirNow = RMC_Dir(rmcNow);
-      bool   rmcFlipped = (rmcDirNow != 0) && (rmcDirNow != InitialRMC_Direction);
+      double jerkNow    = GetJerk_Value(1);
+      int    jerkDirNow = Jerk_Dir(jerkNow);
+      bool   jerkFlipped = (jerkDirNow != 0) && (jerkDirNow != InitialJerk_Direction);
 
-      if(rcFlipped || rmcFlipped)
+      if(rcFlipped || jerkFlipped)
       {
          ReadyToTrade = true;
          string reason = "";
          if(rcFlipped)
             reason += "RC flipped to " + IntegerToString(rcDirNow) + " from initial " + IntegerToString(InitialRC_Direction) + ". ";
-         if(rmcFlipped)
-            reason += "RMC flipped to " + IntegerToString(rmcDirNow) + " from initial " + IntegerToString(InitialRMC_Direction) + ".";
+         if(jerkFlipped)
+            reason += "Jerk flipped to " + IntegerToString(jerkDirNow) + " from initial " + IntegerToString(InitialJerk_Direction) + ".";
          Print("EA: ReadyToTrade armed. ", reason);
       }
    }
@@ -1698,19 +1589,20 @@ void OnTick()
 
    // --- RC EXIT ---
    // Close trades when RC flips against the open direction, gated by the
-   // reversal-brick and RMC checks below so exit conditions mirror entry.
+   // reversal-brick and Jerk checks below so exit conditions mirror entry.
    // The virtual SL remains the independent backstop for genuine reversals.
    if(CountTrades() > 0)
    {
       double rcExit = GetRC_Value();
 
-      // RMC exit gate: block the RC reversal exit until RMC agrees with the
-      // reversal direction. A buy may only be RC-closed when RMC < 0 (red);
-      // a sell only when RMC > 0 (blue) -- matches the entry rule exactly
-      // (both must agree). SL and TP are unaffected and still fire above -
-      // this only holds back the discretionary RC exit.
-      double rmcExit    = UseRMCFilter ? GetRMC_Value() : 0.0;
-      int    rmcExitDir = UseRMCFilter ? RMC_Dir(rmcExit) : 0;
+      // Jerk exit gate: block the RC reversal exit until Jerk agrees with
+      // the reversal direction. A buy may only be RC-closed when Jerk
+      // confirms sell (Jerk > 0); a sell only when Jerk confirms buy
+      // (Jerk < 0) -- matches the entry rule exactly (both must agree).
+      // SL and TP are unaffected and still fire above - this only holds
+      // back the discretionary RC exit.
+      double jerkExit    = UseJerkFilter ? GetJerk_Value(1) : 0.0;
+      int    jerkExitDir = UseJerkFilter ? Jerk_Dir(jerkExit) : 0;
 
       // Reversal-brick gate: the just-closed brick must print in the reversal
       // direction (bear brick to close a buy, bull brick to close a sell).
@@ -1743,17 +1635,18 @@ void OnTick()
          if(OrderType()==OP_BUY  && brickDir != -1) continue;
          if(OrderType()==OP_SELL && brickDir !=  1) continue;
 
-         // RMC agreement gate: hold the exit until RMC confirms. Matches
+         // Jerk agreement gate: hold the exit until Jerk confirms. Matches
          // the entry rule exactly so entry and exit stay symmetric -- a
          // buy closes exactly when the sell entry condition (RC<0 AND
-         // RMC<0) would fire, and vice versa, so the reversal happens
-         // cleanly on the same bar instead of going flat first. Buy
-         // exits need RMC < 0 (red), sell exits need RMC > 0 (blue).
-         if(UseRMCFilter)
+         // Jerk confirms sell) would fire, and vice versa, so the reversal
+         // happens cleanly on the same bar instead of going flat first.
+         // Buy exits need Jerk confirming sell (-1), sell exits need Jerk
+         // confirming buy (+1).
+         if(UseJerkFilter)
          {
-            if(rmcExitDir == 0) continue;                    // no clear red/blue reading - do not exit
-            if(OrderType()==OP_BUY  && rmcExitDir != -1) continue; // buy exit needs RMC clearly red
-            if(OrderType()==OP_SELL && rmcExitDir !=  1) continue; // sell exit needs RMC clearly blue
+            if(jerkExitDir == 0) continue;                       // no clear reading - do not exit
+            if(OrderType()==OP_BUY  && jerkExitDir != -1) continue; // buy exit needs Jerk confirming sell
+            if(OrderType()==OP_SELL && jerkExitDir !=  1) continue; // sell exit needs Jerk confirming buy
          }
 
          if(qCount < 10)
@@ -1808,34 +1701,34 @@ void OnTick()
 
    // --- ENTRY-STATE DIAGNOSTIC (fires every closed brick, before any gate) ---
    {
-      double dRc   = GetRC_Value();
-      int    dRcD  = (dRc > 0) ? 1 : (dRc < 0) ? -1 : 0;
-      int    dBr   = ClosedBrickDir();
-      double dRmc  = UseRMCFilter ? GetRMC_Value() : 0.0;
-      int    dRmcD = UseRMCFilter ? RMC_Dir(dRmc) : 0;
-      int    dDir  = 0;
-      if(UseRMCFilter)
+      double dRc    = GetRC_Value();
+      int    dRcD   = (dRc > 0) ? 1 : (dRc < 0) ? -1 : 0;
+      int    dBr    = ClosedBrickDir();
+      double dJerk  = UseJerkFilter ? GetJerk_Value(1) : 0.0;
+      int    dJerkD = UseJerkFilter ? Jerk_Dir(dJerk) : 0;
+      int    dDir   = 0;
+      if(UseJerkFilter)
       {
-         if(dRcD < 0 && dRmcD < 0)      dDir = -1;
-         else if(dRcD > 0 && dRmcD > 0) dDir =  1;
+         if(dRcD < 0 && dJerkD < 0)      dDir = -1;
+         else if(dRcD > 0 && dJerkD > 0) dDir =  1;
       }
       else dDir = dRcD;
       Print("ZEUS-ENTRY-STATE bar=", TimeToStr(Time[1], TIME_DATE|TIME_MINUTES),
             " rcDir=", dRcD, " brickDir=", dBr,
-            " rmc=", (dRmc==EMPTY_VALUE?"EMPTY":DoubleToStr(dRmc,4)),
-            " rmcDir=", dRmcD,
+            " jerk=", (dJerk==EMPTY_VALUE?"EMPTY":DoubleToStr(dJerk,4)),
+            " jerkDir=", dJerkD,
             " combinedDir=", dDir, " brickOK=", (dBr==dDir),
             " ready=", ReadyToTrade, " waitCycle=", WaitingForNewCycle,
             " trades=", CountTrades(), " allowNew=", AllowNewEntries);
    }
 
    // --- ENTRY CHECK ---
-   // Direction requires RC and Renko Momentum Cycle (RMC) to AGREE in sign:
-   //   RC < 0 (maroon) AND RMC < 0 (red)   -> SELL
-   //   RC > 0 (blue)   AND RMC > 0 (blue)  -> BUY
-   //   anything else (disagreement, either exactly zero, or no valid RMC
+   // Direction requires RC and the Jerk Indicator to AGREE:
+   //   RC < 0 (maroon) AND Jerk confirms sell (Jerk > 0)  -> SELL
+   //   RC > 0 (blue)   AND Jerk confirms buy  (Jerk < 0)  -> BUY
+   //   anything else (disagreement, either exactly zero, or no valid Jerk
    //   read) -> no entry
-   // If UseRMCFilter is off, RMC is ignored entirely and RC alone sets
+   // If UseJerkFilter is off, Jerk is ignored entirely and RC alone sets
    // direction.
    // Still required either way: the just-closed brick must print IN the
    // trade direction (bull brick for a buy, bear brick for a sell) - never
@@ -1848,22 +1741,20 @@ void OnTick()
       int    brickDir = ClosedBrickDir();
 
       int    entryDir = 0;
-      if(UseRMCFilter)
+      if(UseJerkFilter)
       {
-         double rmc    = GetRMC_Value();
-         int    rmcDir = RMC_Dir(rmc);
-         if(rcDir < 0 && rmcDir < 0)      entryDir = -1; // both clearly below zero -> sell
-         else if(rcDir > 0 && rmcDir > 0) entryDir =  1; // both clearly above zero -> buy
-         // DIAGNOSTIC - port's RMC read vs. what RMC.mq4 itself would plot.
+         double jerk    = GetJerk_Value(1);
+         int    jerkDir = Jerk_Dir(jerk);
+         if(rcDir < 0 && jerkDir < 0)      entryDir = -1; // RC bearish AND Jerk confirms sell
+         else if(rcDir > 0 && jerkDir > 0) entryDir =  1; // RC bullish AND Jerk confirms buy
+         // DIAGNOSTIC - Jerk read actually used for this decision.
          Print("ZEUS-FILTER[PORT] bar=", TimeToStr(Time[1], TIME_DATE|TIME_MINUTES),
                " c1=", DoubleToStr(Close[1],Digits),
                " c2=", DoubleToStr(Close[2],Digits),
                " c10=", DoubleToStr(Close[10],Digits),
                " bars=", Bars,
-               " rcDir=", rcDir, " rmcDir=", rmcDir, " entryDir=", entryDir,
-               " rmc=", (rmc==EMPTY_VALUE?"EMPTY":DoubleToStr(rmc,4)),
-               " run=", g_rmcCacheRun, " rsiPeriod=", g_rmcCacheRsiPeriod,
-               " decay=", DoubleToStr(g_rmcCacheDecay,4));
+               " rcDir=", rcDir, " jerkDir=", jerkDir, " entryDir=", entryDir,
+               " jerk=", (jerk==EMPTY_VALUE?"EMPTY":DoubleToStr(jerk,4)));
       }
       else
          entryDir = rcDir;
