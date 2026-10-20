@@ -3,15 +3,20 @@
 zeus_backtest.py
 
 Python replica of Zeus.mq4's live logic, run bar-by-bar over a Renko
-brick series with rc_value and rmc_value already attached. One row = one
+brick series with rc_value and jerk_value already attached. One row = one
 brick = one potential decision point, matching how Zeus itself only acts
 on closed-brick data (CheckVirtualSL/CheckVirtualTP compare against
 Close[1], entries/exits happen on brick close).
 
-Mirrors the current Zeus.mq4 exactly, including the RMC_MinConfirmMagnitude
-fix (RMC must clear a minimum magnitude before it counts as a confirmed
-red/blue direction, not just any nonzero sign) -- both the entry dual-
-agreement check and the RC-flip exit gate use it, same as the live EA.
+Mirrors the current Zeus.mq4 exactly: RMC has been fully removed and
+replaced by the Jerk Indicator (read live via iCustom -- see Jerk_Dir()
+in ZeusAI.mq4). Jerk's sign convention is the OPPOSITE of RC's: Jerk < 0
+confirms buy, Jerk > 0 confirms sell -- jerk_dir() below encodes that
+inversion so it returns the same "+1 = buy-confirmed, -1 = sell-confirmed"
+contract rc_dir() uses, same as the live EA's Jerk_Dir(). Pure sign-based,
+no minimum-magnitude floor (unlike the old RMC_MIN_CONFIRM_MAGNITUDE
+gate) -- jerk_value is expected to already be clamped to +-25 upstream
+(jerk_generator.py), matching GetJerk_Value()'s clamp in the live EA.
 """
 
 from __future__ import annotations
@@ -26,16 +31,16 @@ ZEUS_STOP_LOSS_PIPS = 60.0
 ZEUS_TP_PIPS = [60.0, 120.0, 180.0, None]  # T1..T4; T4 has no target (rides the trend)
 ZEUS_WEIGHTS = [20, 25, 25, 30]            # risk-% split across T1..T4
 ZEUS_MAX_LOTS_PER_TRADE = 50.0
-RMC_MIN_CONFIRM_MAGNITUDE = 0.03           # matches Zeus.mq4's RMC_Dir() fix -- raised from 0.02 to 0.03 by the user live after a trade still entered on an invisible RMC signal line at 0.02
 
 
-def rmc_dir(rmc_value) -> int:
-    if pd.isna(rmc_value):
+def jerk_dir(jerk_value) -> int:
+    """Matches ZeusAI.mq4's Jerk_Dir(): sign is inverted relative to RC."""
+    if pd.isna(jerk_value):
         return 0
-    if rmc_value >= RMC_MIN_CONFIRM_MAGNITUDE:
-        return 1
-    if rmc_value <= -RMC_MIN_CONFIRM_MAGNITUDE:
-        return -1
+    if jerk_value < 0:
+        return 1   # Jerk below zero -> buy side
+    if jerk_value > 0:
+        return -1  # Jerk above zero -> sell side
     return 0
 
 
@@ -70,8 +75,8 @@ def _close_leg(leg: dict, exit_price: float, exit_timestamp, outcome: str, sprea
 def run_zeus_backtest(df: pd.DataFrame, starting_balance: float, spread_pips: float = 1.0, direction_fn=None) -> dict:
     """direction_fn(row, slots) -> -1/0/1, optional: overrides the entry
     direction check only (step 5 below) for testing additional filters on
-    top of the same RC+RMC exit/management logic. Leave None for the
-    exact current live Zeus entry rule (RC+RMC dual-agreement)."""
+    top of the same RC+Jerk exit/management logic. Leave None for the
+    exact current live Zeus entry rule (RC+Jerk dual-agreement)."""
     equity = starting_balance
     slots: list[dict | None] = [None, None, None, None]
     t1_was_open = False
@@ -86,7 +91,7 @@ def run_zeus_backtest(df: pd.DataFrame, starting_balance: float, spread_pips: fl
         ts = row["timestamp"]
         brick_dir = 1 if close > open_ else -1
         rc = rc_dir(row["rc_value"])
-        rmc = rmc_dir(row["rmc_value"])
+        jerk = jerk_dir(row["jerk_value"])
 
         # 1. Virtual SL -- candle close only.
         for idx, leg in enumerate(slots):
@@ -120,7 +125,7 @@ def run_zeus_backtest(df: pd.DataFrame, starting_balance: float, spread_pips: fl
                 trade_log.append(record)
                 slots[idx] = None
 
-        # 4. RC-flip exit, gated by reversal brick + RMC agreement (dual-agreement, same rule as entry).
+        # 4. RC-flip exit, gated by reversal brick + Jerk agreement (dual-agreement, same rule as entry).
         any_open = any(leg is not None for leg in slots)
         if any_open:
             for idx, leg in enumerate(slots):
@@ -133,11 +138,11 @@ def run_zeus_backtest(df: pd.DataFrame, starting_balance: float, spread_pips: fl
                     continue
                 if leg["direction"] == -1 and brick_dir != 1:
                     continue
-                if rmc == 0:
+                if jerk == 0:
                     continue
-                if leg["direction"] == 1 and rmc != -1:
+                if leg["direction"] == 1 and jerk != -1:
                     continue
-                if leg["direction"] == -1 and rmc != 1:
+                if leg["direction"] == -1 and jerk != 1:
                     continue
                 pnl, record = _close_leg(leg, close, ts, "rc_exit", spread_pips)
                 equity += pnl
@@ -148,15 +153,15 @@ def run_zeus_backtest(df: pd.DataFrame, starting_balance: float, spread_pips: fl
             breakeven_triggered = False
             t1_was_open = False
 
-        # 5. Entry -- RC and RMC dual-agreement, brick must print in trade direction, all slots flat.
+        # 5. Entry -- RC and Jerk dual-agreement, brick must print in trade direction, all slots flat.
         if all(leg is None for leg in slots):
             if direction_fn is not None:
                 entry_dir = direction_fn(row, slots)
             else:
                 entry_dir = 0
-                if rc < 0 and rmc == -1:
+                if rc < 0 and jerk == -1:
                     entry_dir = -1
-                elif rc > 0 and rmc == 1:
+                elif rc > 0 and jerk == 1:
                     entry_dir = 1
 
             if entry_dir != 0 and brick_dir == entry_dir:

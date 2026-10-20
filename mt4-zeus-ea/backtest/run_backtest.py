@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from data_ingestion import load_time_series
 from renko_generator import generate_renko_bricks, BRICK_SIZE_PIPS, PIP_SIZE_USDJPY, DECIMALS
 from rc_generator import load_rc_dump, align_to_renko
-from rmc_generator import attach_brick_volume, compute_rmc
+from jerk_generator import load_jerk_dump, align_to_renko as align_jerk_to_renko
 from zeus_backtest import run_zeus_backtest
 
 RAW_DIR = Path(__file__).parent / "data" / "raw"
@@ -29,15 +29,15 @@ rc = load_rc_dump(RAW_DIR / "rc_history.csv")
 renko = align_to_renko(renko, rc)
 print(f"  {renko['rc_value'].notna().sum()}/{len(renko)} bricks have an RC reading")
 
-print("Attaching brick volume and computing RMC...")
-renko = attach_brick_volume(renko, raw)
-renko = compute_rmc(renko)
-print(f"  {renko['rmc_value'].notna().sum()}/{len(renko)} bricks have an RMC reading")
+print("Loading and aligning Jerk dump...")
+jerk = load_jerk_dump(RAW_DIR / "jerk_history.csv")
+renko = align_jerk_to_renko(renko, jerk)
+print(f"  {renko['jerk_value'].notna().sum()}/{len(renko)} bricks have a Jerk reading")
 
 renko.to_csv(OUT_DIR / "renko_usdjpy.csv", index=False)
 print(f"Wrote {OUT_DIR / 'renko_usdjpy.csv'}")
 
-usable = renko.dropna(subset=["rc_value"]).reset_index(drop=True)
+usable = renko.dropna(subset=["rc_value", "jerk_value"]).reset_index(drop=True)
 print(f"\nRunning Zeus backtest ({len(usable)} usable bricks, {usable['timestamp'].min()} to {usable['timestamp'].max()})...")
 result = run_zeus_backtest(usable, starting_balance=1000.0, spread_pips=1.0)
 tl = result["trade_log"]
