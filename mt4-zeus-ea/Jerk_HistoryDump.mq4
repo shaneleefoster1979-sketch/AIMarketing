@@ -24,7 +24,7 @@ input int    Jerk_PolarityCriterion = 0;
 input int    Jerk_PriceData         = 1;
 input int    Jerk_LPD_Period        = 32;
 input int    Jerk_Buffer            = 5;
-input string OutputFileName         = "jerk_history.csv"; // written to the Common Files folder
+input string OutputFileName         = "jerk_history.csv"; // written to the Common Files folder -- the completion alert prints the exact full path
 
 void OnStart()
 {
@@ -67,8 +67,15 @@ void OnStart()
 
    FileClose(h);
    Comment("");
-   string msg = StringFormat("Jerk history dump complete: %d rows written, %d bars skipped (no Jerk value yet). File: %s (Common Files folder).",
-                              written, skipped, OutputFileName);
+
+   // MQL4 scripts can't write outside the terminal's own Files/ or the
+   // shared Common\Files\ sandbox -- there's no direct-to-Desktop option
+   // without raw WinAPI/DLL calls. TerminalInfoString() gives the real,
+   // full OS path instead, so there's nothing to hunt for: copy it,
+   // Windows+R, paste, Enter, Explorer opens straight to the file.
+   string fullPath = TerminalInfoString(TERMINAL_COMMONDATA_PATH) + "\\Files\\" + OutputFileName;
+   string msg = StringFormat("Jerk history dump complete: %d rows written, %d bars skipped (no Jerk value yet).\n\nFull file path (copy this):\n%s",
+                              written, skipped, fullPath);
    Alert(msg);
    Print("EA: ", msg);
 }
