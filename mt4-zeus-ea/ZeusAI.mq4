@@ -143,6 +143,7 @@ input int    TP1                   = 600;   // T1 TP in points
 input int    TP2                   = 1200;  // T2 TP in points
 input int    TP3                   = 1800;  // T3 TP in points
 input int    TP4                   = 0;     // T4 TP (0 = no TP, runner)
+input int    BrickSizePoints       = 200;   // 20-pip bricks on a 3-digit broker = 200 points. TP triggers on BRICK COUNT (tpPoints/BrickSizePoints bricks closed since entry), not price -- a zigzagging market needs more bricks to cover the same net distance, so price-based and brick-count-based targets are NOT the same thing.
 input bool   Trade1Enabled         = true;
 input bool   Trade2Enabled         = true;
 input bool   Trade3Enabled         = true;
@@ -219,7 +220,8 @@ int      knownTicketCount      = 0;
 #define MAX_TRADES 10
 int    vTicket[MAX_TRADES];
 double vSL[MAX_TRADES];
-double vTP[MAX_TRADES];
+double vTP[MAX_TRADES];        // informational only now -- see vTPBricks
+int    vTPBricks[MAX_TRADES];  // the ACTUAL take-profit trigger: bricks closed since entry, not price
 double vBEPrice[MAX_TRADES];
 int    vCount = 0;
 
@@ -293,15 +295,16 @@ bool LoadTicketFromFile(int ticket, double &outSL, double &outTP, double &outBE)
 }
 
 // +------------------------------------------------------------------+
-void VirtualStore(int ticket, double sl, double tp, double bePrice)
+void VirtualStore(int ticket, double sl, double tp, int tpBricks, double bePrice)
 {
    for(int i = 0; i < vCount; i++)
    {
       if(vTicket[i] == ticket)
       {
-         vSL[i]      = sl;
-         vTP[i]      = tp;
-         vBEPrice[i] = bePrice;
+         vSL[i]       = sl;
+         vTP[i]       = tp;
+         vTPBricks[i] = tpBricks;
+         vBEPrice[i]  = bePrice;
          GlobalVariableSet(GV_SL(ticket), sl);
          GlobalVariableSet(GV_TP(ticket), tp);
          GlobalVariableSet(GV_BE(ticket), bePrice);
@@ -311,10 +314,11 @@ void VirtualStore(int ticket, double sl, double tp, double bePrice)
    }
    if(vCount < MAX_TRADES)
    {
-      vTicket[vCount]  = ticket;
-      vSL[vCount]      = sl;
-      vTP[vCount]      = tp;
-      vBEPrice[vCount] = bePrice;
+      vTicket[vCount]   = ticket;
+      vSL[vCount]       = sl;
+      vTP[vCount]       = tp;
+      vTPBricks[vCount] = tpBricks;
+      vBEPrice[vCount]  = bePrice;
       vCount++;
       GlobalVariableSet(GV_SL(ticket), sl);
       GlobalVariableSet(GV_TP(ticket), tp);
@@ -352,10 +356,11 @@ void VirtualRemove(int ticket)
       {
          for(int j = i; j < vCount - 1; j++)
          {
-            vTicket[j]  = vTicket[j+1];
-            vSL[j]      = vSL[j+1];
-            vTP[j]      = vTP[j+1];
-            vBEPrice[j] = vBEPrice[j+1];
+            vTicket[j]   = vTicket[j+1];
+            vSL[j]       = vSL[j+1];
+            vTP[j]       = vTP[j+1];
+            vTPBricks[j] = vTPBricks[j+1];
+            vBEPrice[j]  = vBEPrice[j+1];
          }
          vCount--;
          SaveStateToFile();
@@ -376,6 +381,15 @@ double VirtualGetTP(int ticket)
 {
    for(int i = 0; i < vCount; i++)
       if(vTicket[i] == ticket) return vTP[i];
+   return 0;
+}
+
+// The actual TP trigger: how many bricks must close since entry (0 = no
+// target, a runner leg). See CheckVirtualTP().
+int VirtualGetTPBricks(int ticket)
+{
+   for(int i = 0; i < vCount; i++)
+      if(vTicket[i] == ticket) return vTPBricks[i];
    return 0;
 }
 
@@ -479,12 +493,29 @@ void RestoreStateFromGlobalVariables()
       // Fallback: BE from open price if unknown
       if(savedBE == 0) savedBE = OrderOpenPrice();
 
+      // TPBricks is never persisted (no price dependency to go stale) --
+      // always derived fresh from the leg's own label + the current fixed
+      // TP1-4 inputs. This is exact whenever AI was off at entry (the
+      // normal case); if AI chose a non-standard profile for this specific
+      // leg and MT4 then restarted before it closed, this falls back to
+      // the fixed-input value for that label, same spirit as the other
+      // last-resort fallbacks above.
+      string lbl2 = OrderComment();
+      int    savedTPBricks = 0;
+      int    tpPtsForLabel = 0;
+      if(lbl2 == "T1")      tpPtsForLabel = TP1;
+      else if(lbl2 == "T2") tpPtsForLabel = TP2;
+      else if(lbl2 == "T3") tpPtsForLabel = TP3;
+      else if(lbl2 == "T4") tpPtsForLabel = TP4;
+      if(tpPtsForLabel > 0) savedTPBricks = tpPtsForLabel / BrickSizePoints;
+
       if(vCount < MAX_TRADES)
       {
-         vTicket[vCount]  = ticket;
-         vSL[vCount]      = savedSL;
-         vTP[vCount]      = savedTP;
-         vBEPrice[vCount] = savedBE;
+         vTicket[vCount]   = ticket;
+         vSL[vCount]       = savedSL;
+         vTP[vCount]       = savedTP;
+         vTPBricks[vCount] = savedTPBricks;
+         vBEPrice[vCount]  = savedBE;
          vCount++;
       }
 
@@ -492,7 +523,7 @@ void RestoreStateFromGlobalVariables()
 
       Print("EA: Restored ticket=", ticket,
             " VSL=", savedSL,
-            " VTP=", (savedTP > 0 ? DoubleToStr(savedTP, Digits) : "none"),
+            " TPBricks=", (savedTPBricks > 0 ? IntegerToString(savedTPBricks) : "none (runner)"),
             " BEPrice=", savedBE);
    }
 
@@ -1069,11 +1100,20 @@ void OpenTrade(int type, double entry, double candleClose,
                 ? NormalizeDouble(candleClose - slPoints * Point, Digits)
                 : NormalizeDouble(candleClose + slPoints * Point, Digits);
 
+   // vtp (price) is kept only as an informational reference for logging --
+   // it is NOT what triggers the close anymore. tpBricks is the real
+   // trigger: how many bricks must close since this leg's own entry,
+   // checked in CheckVirtualTP() via OrderOpenTime(), independent of
+   // whatever price those bricks happen to land at.
    double vtp = 0;
+   int    tpBricks = 0;
    if(tpPoints > 0)
+   {
       vtp = (type == OP_BUY)
             ? NormalizeDouble(candleClose + tpPoints * Point, Digits)
             : NormalizeDouble(candleClose - tpPoints * Point, Digits);
+      tpBricks = tpPoints / BrickSizePoints;
+   }
 
    double lots   = GetLotSize(weightPct, slPoints);
    int    ticket = OrderSend(Symbol(), type, lots, entry, Slippage,
@@ -1084,7 +1124,7 @@ void OpenTrade(int type, double entry, double candleClose,
       return;
    }
 
-   VirtualStore(ticket, vsl, vtp, candleClose);
+   VirtualStore(ticket, vsl, vtp, tpBricks, candleClose);
 
    // No custom chart markers -- MT4's own native trade-history flags (drawn
    // automatically for every real order this EA opens/closes) are what's
@@ -1096,7 +1136,8 @@ void OpenTrade(int type, double entry, double candleClose,
          " CandleClose=", candleClose,
          " SLPoints=", slPoints,
          " VSL=", vsl,
-         " VTP=", (vtp > 0 ? DoubleToStr(vtp, Digits) : "none"));
+         " TPBricks=", (tpBricks > 0 ? IntegerToString(tpBricks) : "none (runner)"),
+         " (ref price=", (vtp > 0 ? DoubleToStr(vtp, Digits) : "none"), ")");
 }
 
 // +------------------------------------------------------------------+
@@ -1234,22 +1275,29 @@ void CheckVirtualSL()
 // +------------------------------------------------------------------+
 void CheckVirtualTP()
 {
-   double candleClose = Close[1];
-   int    qTickets[10];
-   int    qCount = 0;
+   int qTickets[10];
+   int qCount = 0;
 
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       if(OrderMagicNumber() != MagicNumber || OrderSymbol() != Symbol()) continue;
 
-      int    ticket = OrderTicket();
-      double vtp    = VirtualGetTP(ticket);
-      if(vtp == 0) continue;
+      int ticket   = OrderTicket();
+      int tpBricks = VirtualGetTPBricks(ticket);
+      if(tpBricks == 0) continue; // runner leg, no TP
 
-      bool hit = false;
-      if(OrderType() == OP_BUY  && candleClose >= vtp) hit = true;
-      if(OrderType() == OP_SELL && candleClose <= vtp) hit = true;
+      // How many bricks have FULLY CLOSED since this leg's own entry brick.
+      // shift 0 is always the live/still-forming brick on this chart, never
+      // counted -- iBarShift(entry time) gives the entry brick's current
+      // shift, which is 1 at the moment of entry (entry brick sits at
+      // shift 1, the just-closed bar) and increases by exactly 1 each time
+      // one more brick finishes. Subtracting 1 converts that to "bricks
+      // closed since entry, not counting the entry brick itself."
+      int entryShift = iBarShift(NULL, 0, OrderOpenTime(), false);
+      int bricksClosedSinceEntry = MathMax(0, entryShift - 1);
+
+      bool hit = (bricksClosedSinceEntry >= tpBricks);
 
       if(hit && qCount < 10)
       {
@@ -1273,14 +1321,17 @@ void CheckVirtualTP()
 
    for(int q = 0; q < qCount; q++)
    {
-      int ticket = qTickets[q];
+      int ticket   = qTickets[q];
       if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES)) continue;
-      double vtp = VirtualGetTP(ticket);
-      double cp  = (OrderType() == OP_BUY) ? Bid : Ask;
+      int    tpBricks = VirtualGetTPBricks(ticket);
+      int    entryShift = iBarShift(NULL, 0, OrderOpenTime(), false);
+      int    bricksClosedSinceEntry = MathMax(0, entryShift - 1);
+      double cp = (OrderType() == OP_BUY) ? Bid : Ask;
       if(OrderClose(ticket, OrderLots(), cp, Slippage))
       {
-         Print("EA: VTP hit - closed ticket=", ticket,
-               " CandleClose=", candleClose, " VTP=", vtp);
+         Print("EA: VTP hit (brick count) - closed ticket=", ticket,
+               " bricksClosedSinceEntry=", bricksClosedSinceEntry,
+               " target=", tpBricks, " closePrice=", cp);
          VirtualRemove(ticket);
          RemoveKnownTicket(ticket);
       }
