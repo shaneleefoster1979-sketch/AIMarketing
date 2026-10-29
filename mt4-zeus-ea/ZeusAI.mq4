@@ -143,7 +143,7 @@ input int    TP1                   = 600;   // T1 TP in points
 input int    TP2                   = 1200;  // T2 TP in points
 input int    TP3                   = 1800;  // T3 TP in points
 input int    TP4                   = 0;     // T4 TP (0 = no TP, runner)
-input int    BrickSizePoints       = 200;   // 20-pip bricks on a 3-digit broker = 200 points. TP triggers on BRICK COUNT (tpPoints/BrickSizePoints bricks closed since entry), not price -- a zigzagging market needs more bricks to cover the same net distance, so price-based and brick-count-based targets are NOT the same thing.
+input int    BrickSizePoints       = 200;   // 20-pip bricks on a 3-digit broker = 200 points. TP triggers on BRICK COUNT (tpPoints/BrickSizePoints FAVORABLE bricks closed since entry -- only bricks printing in the trade's own direction count, a pullback brick against the position does not), not price.
 input bool   Trade1Enabled         = true;
 input bool   Trade2Enabled         = true;
 input bool   Trade3Enabled         = true;
@@ -1272,6 +1272,25 @@ void CheckVirtualSL()
 
 // +------------------------------------------------------------------+
 // CheckVirtualTP - candle close only
+// Counts bricks closed since openTime that printed IN the trade's OWN
+// favorable direction only -- a bull brick for a buy, a bear brick for a
+// sell. A pullback/reversal brick against the position does not count,
+// even though it still "closed." Walks from the brick right after entry
+// (entryShift-1) down to the most recently closed brick (shift 1); shift
+// 0 is never included, it's always the live/still-forming brick here.
+int CountFavorableBricksSinceEntry(int orderType, datetime openTime)
+{
+   int entryShift = iBarShift(NULL, 0, openTime, false);
+   int count = 0;
+   for(int s = entryShift - 1; s >= 1; s--)
+   {
+      bool brickUp = (Close[s] > Open[s]);
+      if(orderType == OP_BUY  && brickUp)  count++;
+      if(orderType == OP_SELL && !brickUp) count++;
+   }
+   return count;
+}
+
 // +------------------------------------------------------------------+
 void CheckVirtualTP()
 {
@@ -1287,17 +1306,8 @@ void CheckVirtualTP()
       int tpBricks = VirtualGetTPBricks(ticket);
       if(tpBricks == 0) continue; // runner leg, no TP
 
-      // How many bricks have FULLY CLOSED since this leg's own entry brick.
-      // shift 0 is always the live/still-forming brick on this chart, never
-      // counted -- iBarShift(entry time) gives the entry brick's current
-      // shift, which is 1 at the moment of entry (entry brick sits at
-      // shift 1, the just-closed bar) and increases by exactly 1 each time
-      // one more brick finishes. Subtracting 1 converts that to "bricks
-      // closed since entry, not counting the entry brick itself."
-      int entryShift = iBarShift(NULL, 0, OrderOpenTime(), false);
-      int bricksClosedSinceEntry = MathMax(0, entryShift - 1);
-
-      bool hit = (bricksClosedSinceEntry >= tpBricks);
+      int favorableBricks = CountFavorableBricksSinceEntry(OrderType(), OrderOpenTime());
+      bool hit = (favorableBricks >= tpBricks);
 
       if(hit && qCount < 10)
       {
@@ -1324,13 +1334,12 @@ void CheckVirtualTP()
       int ticket   = qTickets[q];
       if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES)) continue;
       int    tpBricks = VirtualGetTPBricks(ticket);
-      int    entryShift = iBarShift(NULL, 0, OrderOpenTime(), false);
-      int    bricksClosedSinceEntry = MathMax(0, entryShift - 1);
+      int    favorableBricks = CountFavorableBricksSinceEntry(OrderType(), OrderOpenTime());
       double cp = (OrderType() == OP_BUY) ? Bid : Ask;
       if(OrderClose(ticket, OrderLots(), cp, Slippage))
       {
-         Print("EA: VTP hit (brick count) - closed ticket=", ticket,
-               " bricksClosedSinceEntry=", bricksClosedSinceEntry,
+         Print("EA: VTP hit (favorable brick count) - closed ticket=", ticket,
+               " favorableBricksSinceEntry=", favorableBricks,
                " target=", tpBricks, " closePrice=", cp);
          VirtualRemove(ticket);
          RemoveKnownTicket(ticket);
