@@ -143,7 +143,7 @@ input int    TP1                   = 600;   // T1 TP in points
 input int    TP2                   = 1200;  // T2 TP in points
 input int    TP3                   = 1800;  // T3 TP in points
 input int    TP4                   = 0;     // T4 TP (0 = no TP, runner)
-input int    BrickSizePoints       = 200;   // 20-pip bricks on a 3-digit broker = 200 points. TP triggers on BRICK COUNT (tpPoints/BrickSizePoints FAVORABLE bricks closed since entry -- only bricks printing in the trade's own direction count, a pullback brick against the position does not), not price.
+input int    BrickSizePoints       = 200;   // 20-pip bricks on a 3-digit broker = 200 points. TP triggers on BRICK COUNT (tpPoints/BrickSizePoints FAVORABLE bricks closed since entry -- only bricks printing in the trade's own direction count, a pullback brick against the position does not), not price. SL (pre-breakeven) triggers the same way on ADVERSE bricks, but WEIGHTED: see SLBricksFromPoints() -- the first adverse brick is always a Renko reversal brick (2x the normal brick distance), so fewer adverse bricks are needed than the naive tpPoints/BrickSizePoints count.
 input bool   Trade1Enabled         = true;
 input bool   Trade2Enabled         = true;
 input bool   Trade3Enabled         = true;
@@ -219,7 +219,8 @@ int      knownTicketCount      = 0;
 // +------------------------------------------------------------------+
 #define MAX_TRADES 10
 int    vTicket[MAX_TRADES];
-double vSL[MAX_TRADES];
+double vSL[MAX_TRADES];        // informational pre-breakeven; the REAL post-breakeven stop price (vSLBricks no longer applies once BreakEvenTriggered)
+int    vSLBricks[MAX_TRADES];  // the ACTUAL pre-breakeven stop trigger: weighted adverse bricks closed since entry, not price
 double vTP[MAX_TRADES];        // informational only now -- see vTPBricks
 int    vTPBricks[MAX_TRADES];  // the ACTUAL take-profit trigger: bricks closed since entry, not price
 double vBEPrice[MAX_TRADES];
@@ -295,13 +296,14 @@ bool LoadTicketFromFile(int ticket, double &outSL, double &outTP, double &outBE)
 }
 
 // +------------------------------------------------------------------+
-void VirtualStore(int ticket, double sl, double tp, int tpBricks, double bePrice)
+void VirtualStore(int ticket, double sl, int slBricks, double tp, int tpBricks, double bePrice)
 {
    for(int i = 0; i < vCount; i++)
    {
       if(vTicket[i] == ticket)
       {
          vSL[i]       = sl;
+         vSLBricks[i] = slBricks;
          vTP[i]       = tp;
          vTPBricks[i] = tpBricks;
          vBEPrice[i]  = bePrice;
@@ -316,6 +318,7 @@ void VirtualStore(int ticket, double sl, double tp, int tpBricks, double bePrice
    {
       vTicket[vCount]   = ticket;
       vSL[vCount]       = sl;
+      vSLBricks[vCount] = slBricks;
       vTP[vCount]       = tp;
       vTPBricks[vCount] = tpBricks;
       vBEPrice[vCount]  = bePrice;
@@ -358,6 +361,7 @@ void VirtualRemove(int ticket)
          {
             vTicket[j]   = vTicket[j+1];
             vSL[j]       = vSL[j+1];
+            vSLBricks[j] = vSLBricks[j+1];
             vTP[j]       = vTP[j+1];
             vTPBricks[j] = vTPBricks[j+1];
             vBEPrice[j]  = vBEPrice[j+1];
@@ -374,6 +378,16 @@ double VirtualGetSL(int ticket)
 {
    for(int i = 0; i < vCount; i++)
       if(vTicket[i] == ticket) return vSL[i];
+   return 0;
+}
+
+// The pre-breakeven stop trigger: weighted adverse bricks closed since
+// entry (0 = unknown/none). See CheckVirtualSL() and
+// SLBricksFromPoints() for the weighting rationale.
+int VirtualGetSLBricks(int ticket)
+{
+   for(int i = 0; i < vCount; i++)
+      if(vTicket[i] == ticket) return vSLBricks[i];
    return 0;
 }
 
@@ -493,13 +507,13 @@ void RestoreStateFromGlobalVariables()
       // Fallback: BE from open price if unknown
       if(savedBE == 0) savedBE = OrderOpenPrice();
 
-      // TPBricks is never persisted (no price dependency to go stale) --
-      // always derived fresh from the leg's own label + the current fixed
-      // TP1-4 inputs. This is exact whenever AI was off at entry (the
-      // normal case); if AI chose a non-standard profile for this specific
-      // leg and MT4 then restarted before it closed, this falls back to
-      // the fixed-input value for that label, same spirit as the other
-      // last-resort fallbacks above.
+      // TPBricks/SLBricks are never persisted (no price dependency to go
+      // stale) -- always derived fresh from the leg's own label + the
+      // current fixed TP1-4/StopLossPoints inputs. This is exact whenever
+      // AI was off at entry (the normal case); if AI chose a non-standard
+      // profile for this specific leg and MT4 then restarted before it
+      // closed, this falls back to the fixed-input value, same spirit as
+      // the other last-resort fallbacks above.
       string lbl2 = OrderComment();
       int    savedTPBricks = 0;
       int    tpPtsForLabel = 0;
@@ -509,10 +523,13 @@ void RestoreStateFromGlobalVariables()
       else if(lbl2 == "T4") tpPtsForLabel = TP4;
       if(tpPtsForLabel > 0) savedTPBricks = tpPtsForLabel / BrickSizePoints;
 
+      int savedSLBricks = SLBricksFromPoints(StopLossPoints);
+
       if(vCount < MAX_TRADES)
       {
          vTicket[vCount]   = ticket;
          vSL[vCount]       = savedSL;
+         vSLBricks[vCount] = savedSLBricks;
          vTP[vCount]       = savedTP;
          vTPBricks[vCount] = savedTPBricks;
          vBEPrice[vCount]  = savedBE;
@@ -522,7 +539,7 @@ void RestoreStateFromGlobalVariables()
       if(OrderComment() == "T1") T1_WasOpen = true;
 
       Print("EA: Restored ticket=", ticket,
-            " VSL=", savedSL,
+            " VSL=", savedSL, " SLBricks=", savedSLBricks,
             " TPBricks=", (savedTPBricks > 0 ? IntegerToString(savedTPBricks) : "none (runner)"),
             " BEPrice=", savedBE);
    }
@@ -1093,12 +1110,36 @@ double GetLotSize(int weightPct, int slPoints)
 // +------------------------------------------------------------------+
 // OpenTrade
 // +------------------------------------------------------------------+
+// How many ADVERSE bricks (closing against the trade) are needed to cover
+// slPoints of real distance, accounting for Renko's reversal-brick
+// doubling: the first adverse brick after a run in the trade's favor is
+// ALWAYS a reversal relative to the brick before it, and a reversal brick
+// covers 2x the normal brick distance (its Open is offset one brick from
+// the prior extreme, its Close one more brick beyond that) -- confirmed
+// directly against this chart's own live data. So the first counted
+// adverse brick is worth 2 bricks of distance, every one after it worth 1.
+// Example: slPoints=600, BrickSizePoints=200 -> 3 bricks of distance ->
+// 1 (reversal, worth 2) + 1 (continuation, worth 1) = 2 bricks needed,
+// not 3.
+int SLBricksFromPoints(int slPoints)
+{
+   if(slPoints <= 0) return 0;
+   int totalBricksOfDistance = slPoints / BrickSizePoints;
+   return 1 + MathMax(0, totalBricksOfDistance - 2);
+}
+
 void OpenTrade(int type, double entry, double candleClose,
                int tpPoints, string label, int weightPct, int slPoints)
 {
+   // vsl (price) is kept only as an informational reference until
+   // breakeven triggers, at which point it becomes the REAL stop (a fixed
+   // price is exactly what breakeven means -- protect at entry price).
+   // Before that, slBricks is the real trigger, same brick-count approach
+   // as TP. See CheckVirtualSL().
    double vsl = (type == OP_BUY)
                 ? NormalizeDouble(candleClose - slPoints * Point, Digits)
                 : NormalizeDouble(candleClose + slPoints * Point, Digits);
+   int slBricks = SLBricksFromPoints(slPoints);
 
    // vtp (price) is kept only as an informational reference for logging --
    // it is NOT what triggers the close anymore. tpBricks is the real
@@ -1124,7 +1165,7 @@ void OpenTrade(int type, double entry, double candleClose,
       return;
    }
 
-   VirtualStore(ticket, vsl, vtp, tpBricks, candleClose);
+   VirtualStore(ticket, vsl, slBricks, vtp, tpBricks, candleClose);
 
    // No custom chart markers -- MT4's own native trade-history flags (drawn
    // automatically for every real order this EA opens/closes) are what's
@@ -1135,7 +1176,8 @@ void OpenTrade(int type, double entry, double candleClose,
          " Weight=", weightPct, "%",
          " CandleClose=", candleClose,
          " SLPoints=", slPoints,
-         " VSL=", vsl,
+         " SLBricks=", slBricks,
+         " (ref price=", vsl, ")",
          " TPBricks=", (tpBricks > 0 ? IntegerToString(tpBricks) : "none (runner)"),
          " (ref price=", (vtp > 0 ? DoubleToStr(vtp, Digits) : "none"), ")");
 }
@@ -1204,6 +1246,18 @@ bool ExistsT1()
 // +------------------------------------------------------------------+
 void CheckVirtualSL()
 {
+   // Pre-breakeven: the stop is triggered by WEIGHTED ADVERSE BRICK COUNT
+   // since entry (see SLBricksFromPoints()), not price -- same brick-count
+   // approach as TP, for the same reason: a zigzagging market needs a
+   // different number of bricks than a straight-line move to cover the
+   // same net distance, and price-crossing a fixed level doesn't capture
+   // that the way a brick count does.
+   //
+   // Post-breakeven: BreakEvenTriggered is global and MoveAllToBE() moves
+   // EVERY open leg's vSL to the exact entry price at once, so once that's
+   // happened the stop genuinely IS a fixed price (that's what breakeven
+   // means) and brick-counting no longer applies -- revert to the
+   // original price-cross check for all legs together.
    double candleClose = Close[1];
    int    qTickets[10];
    int    qCount = 0;
@@ -1213,13 +1267,24 @@ void CheckVirtualSL()
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       if(OrderMagicNumber() != MagicNumber || OrderSymbol() != Symbol()) continue;
 
-      int    ticket = OrderTicket();
-      double vsl    = VirtualGetSL(ticket);
-      if(vsl == 0) continue;
-
+      int ticket = OrderTicket();
       bool hit = false;
-      if(OrderType() == OP_BUY  && candleClose <= vsl) hit = true;
-      if(OrderType() == OP_SELL && candleClose >= vsl) hit = true;
+
+      if(BreakEvenTriggered)
+      {
+         double vsl = VirtualGetSL(ticket);
+         if(vsl == 0) continue;
+         if(OrderType() == OP_BUY  && candleClose <= vsl) hit = true;
+         if(OrderType() == OP_SELL && candleClose >= vsl) hit = true;
+      }
+      else
+      {
+         int slBricks = VirtualGetSLBricks(ticket);
+         if(slBricks == 0) continue;
+         int adverseType = (OrderType() == OP_BUY) ? OP_SELL : OP_BUY;
+         int adverseBricks = CountFavorableBricksSinceEntry(adverseType, OrderOpenTime());
+         hit = (adverseBricks >= slBricks);
+      }
 
       if(hit && qCount < 10)
       {
@@ -1252,12 +1317,21 @@ void CheckVirtualSL()
    {
       int ticket = qTickets[q];
       if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES)) continue;
-      double vsl = VirtualGetSL(ticket);
-      double cp  = (OrderType() == OP_BUY) ? Bid : Ask;
+      double cp = (OrderType() == OP_BUY) ? Bid : Ask;
       if(OrderClose(ticket, OrderLots(), cp, Slippage))
       {
-         Print("EA: VSL hit - closed ticket=", ticket,
-               " CandleClose=", candleClose, " VSL=", vsl);
+         if(BreakEvenTriggered)
+         {
+            Print("EA: VSL hit (breakeven price) - closed ticket=", ticket,
+                  " CandleClose=", candleClose, " VSL=", VirtualGetSL(ticket));
+         }
+         else
+         {
+            int adverseType = (OrderType() == OP_BUY) ? OP_SELL : OP_BUY;
+            Print("EA: VSL hit (weighted adverse brick count) - closed ticket=", ticket,
+                  " adverseBricksSinceEntry=", CountFavorableBricksSinceEntry(adverseType, OrderOpenTime()),
+                  " target=", VirtualGetSLBricks(ticket), " closePrice=", cp);
+         }
          VirtualRemove(ticket);
          RemoveKnownTicket(ticket);
       }
