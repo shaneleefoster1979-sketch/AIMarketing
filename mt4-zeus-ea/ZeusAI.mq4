@@ -149,7 +149,7 @@ input bool   Trade2Enabled         = true;
 input bool   Trade3Enabled         = true;
 input bool   Trade4Enabled         = true;
 input int    RC_Period             = 7;     // Range Cycle period
-input bool   UseJerkFilter         = true;  // Require Jerk Indicator to AGREE with RC (Jerk<0=buy side, Jerk>0=sell side -- INVERTED sign vs RC, see Jerk_Dir())
+input bool   UseJerkFilter         = true;  // Require Jerk Indicator to AGREE with RC (Jerk>0=buy side, Jerk<0=sell side -- SAME sign as RC, see Jerk_Dir())
 input string Jerk_IndicatorName    = "Jerk Indicator"; // exact name iCustom() loads by -- include a subfolder prefix (e.g. "Market\\Jerk Indicator") if it's not directly in MQL4/Indicators
 input int    Jerk_PolarityCriterion = 0;    // confirmed via Jerk_Probe.mq4: matches "Signal Polarity Criterion" = Jerk_Acceleration
 input int    Jerk_PriceData         = 1;    // confirmed via Jerk_Probe.mq4: matches "Select Price Data" = Bar_Close
@@ -790,19 +790,23 @@ double GetJerk_Value(int shift)
 }
 
 // Jerk_Dir(): the ONE place that turns a raw GetJerk_Value() reading into a
-// +1/-1/0 direction, everywhere in this file. Jerk's sign convention is the
-// OPPOSITE of RC's: Jerk < 0 confirms BUY, Jerk > 0 confirms SELL (per the
-// live strategy as specified) -- this function is where that inversion
-// lives, so every caller downstream can keep using the same
-// "+1 = buy-confirmed, -1 = sell-confirmed" contract RC and the old RMC
-// both used, with no sign-flip logic duplicated elsewhere in the file.
+// +1/-1/0 direction, everywhere in this file. Jerk's sign convention here
+// matches RC's (momentum-style, not the original mean-reversion read):
+// Jerk > 0 confirms BUY, Jerk < 0 confirms SELL -- flipped from the
+// original "buy below 0 / sell above 0" rule after a backtest comparison
+// showed the momentum read winning clearly on both dev and the untouched
+// lockbox set (84.0% vs 69.5% dev win rate, 74.5% vs 71.9% lockbox, at
+// Jerk_LPD_Period=5). This function is where the mapping lives, so every
+// caller downstream keeps using the same "+1 = buy-confirmed,
+// -1 = sell-confirmed" contract RC and the old RMC both used, with no
+// sign logic duplicated elsewhere in the file.
 // Pure sign-based by design (no minimum-magnitude floor) -- only the
 // +-Jerk_ClampMax safety bound applies, already done in GetJerk_Value().
 int Jerk_Dir(double jerk)
 {
    if(jerk == EMPTY_VALUE) return 0;
-   if(jerk <  0) return  1; // Jerk below zero -> buy side
-   if(jerk >  0) return -1; // Jerk above zero -> sell side
+   if(jerk >  0) return  1; // Jerk above zero -> buy side
+   if(jerk <  0) return -1; // Jerk below zero -> sell side
    return 0;
 }
 
@@ -1731,8 +1735,8 @@ void OnTick()
 
       // Jerk exit gate: block the RC reversal exit until Jerk agrees with
       // the reversal direction. A buy may only be RC-closed when Jerk
-      // confirms sell (Jerk > 0); a sell only when Jerk confirms buy
-      // (Jerk < 0) -- matches the entry rule exactly (both must agree).
+      // confirms sell (Jerk < 0); a sell only when Jerk confirms buy
+      // (Jerk > 0) -- matches the entry rule exactly (both must agree).
       // SL and TP are unaffected and still fire above - this only holds
       // back the discretionary RC exit.
       double jerkExit    = UseJerkFilter ? GetJerk_Value(1) : 0.0;
@@ -1858,8 +1862,8 @@ void OnTick()
 
    // --- ENTRY CHECK ---
    // Direction requires RC and the Jerk Indicator to AGREE:
-   //   RC < 0 (maroon) AND Jerk confirms sell (Jerk > 0)  -> SELL
-   //   RC > 0 (blue)   AND Jerk confirms buy  (Jerk < 0)  -> BUY
+   //   RC < 0 (maroon) AND Jerk confirms sell (Jerk < 0)  -> SELL
+   //   RC > 0 (blue)   AND Jerk confirms buy  (Jerk > 0)  -> BUY
    //   anything else (disagreement, either exactly zero, or no valid Jerk
    //   read) -> no entry
    // If UseJerkFilter is off, Jerk is ignored entirely and RC alone sets
