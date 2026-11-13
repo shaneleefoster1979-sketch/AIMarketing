@@ -153,7 +153,7 @@ input bool   UseJerkFilter         = true;  // Require Jerk Indicator to AGREE w
 input string Jerk_IndicatorName    = "Jerk Indicator"; // exact name iCustom() loads by -- include a subfolder prefix (e.g. "Market\\Jerk Indicator") if it's not directly in MQL4/Indicators
 input int    Jerk_PolarityCriterion = 0;    // confirmed via Jerk_Probe.mq4: matches "Signal Polarity Criterion" = Jerk_Acceleration
 input int    Jerk_PriceData         = 1;    // confirmed via Jerk_Probe.mq4: matches "Select Price Data" = Bar_Close
-input int    Jerk_LPD_Period        = 32;   // must match the real Jerk Indicator's LPD Period input
+input int    Jerk_LPD_Period        = 5;    // must match the real Jerk Indicator's LPD Period input -- changed from 32 to 5 after the period sweep showed 5 as the clear best performer (dev 69.5% WR, lockbox 71.9% WR, lockbox WR higher than dev)
 input int    Jerk_Buffer            = 5;    // confirmed buffer index -- the only colored (DeepSkyBlue) line
 input double Jerk_ClampMax          = 25.0; // raw value is clamped to +-this before use, matching the indicator's own fixed scale
 input bool   AllowNewEntries       = true;  // Uncheck to pause entries after manual close
