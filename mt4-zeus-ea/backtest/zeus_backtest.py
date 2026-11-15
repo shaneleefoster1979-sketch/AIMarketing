@@ -10,13 +10,14 @@ Close[1], entries/exits happen on brick close).
 
 Mirrors the current Zeus.mq4 exactly: RMC has been fully removed and
 replaced by the Jerk Indicator (read live via iCustom -- see Jerk_Dir()
-in ZeusAI.mq4). Jerk's sign convention is the OPPOSITE of RC's: Jerk < 0
-confirms buy, Jerk > 0 confirms sell -- jerk_dir() below encodes that
-inversion so it returns the same "+1 = buy-confirmed, -1 = sell-confirmed"
-contract rc_dir() uses, same as the live EA's Jerk_Dir(). Pure sign-based,
-no minimum-magnitude floor (unlike the old RMC_MIN_CONFIRM_MAGNITUDE
-gate) -- jerk_value is expected to already be clamped to +-25 upstream
-(jerk_generator.py), matching GetJerk_Value()'s clamp in the live EA.
+in ZeusAI.mq4). Jerk's sign convention now matches RC's (momentum read,
+flipped from the original mean-reversion rule): Jerk > 0 confirms buy,
+Jerk < 0 confirms sell -- jerk_dir() below encodes that so it returns the
+same "+1 = buy-confirmed, -1 = sell-confirmed" contract rc_dir() uses,
+same as the live EA's Jerk_Dir(). Pure sign-based, no minimum-magnitude
+floor (unlike the old RMC_MIN_CONFIRM_MAGNITUDE gate) -- jerk_value is
+expected to already be clamped to +-25 upstream (jerk_generator.py),
+matching GetJerk_Value()'s clamp in the live EA.
 """
 
 from __future__ import annotations
@@ -34,13 +35,16 @@ ZEUS_MAX_LOTS_PER_TRADE = 50.0
 
 
 def jerk_dir(jerk_value) -> int:
-    """Matches ZeusAI.mq4's Jerk_Dir(): sign is inverted relative to RC."""
+    """Matches ZeusAI.mq4's Jerk_Dir(): same sign convention as RC now
+    (momentum read) -- flipped from the original mean-reversion rule after
+    a backtest comparison showed it winning clearly on both dev and
+    lockbox (see jerk_sign_inversion_test.py)."""
     if pd.isna(jerk_value):
         return 0
-    if jerk_value < 0:
-        return 1   # Jerk below zero -> buy side
     if jerk_value > 0:
-        return -1  # Jerk above zero -> sell side
+        return 1   # Jerk above zero -> buy side
+    if jerk_value < 0:
+        return -1  # Jerk below zero -> sell side
     return 0
 
 
