@@ -200,6 +200,18 @@ bool     ManualUnlocked    = false;
 string   UNLOCK_FLAG       = "renko_ready.txt";
 int      LOCKOUT_MINUTES   = 2;
 
+// Chart-settle guard for the brick-count SL/TP triggers specifically.
+// Set unconditionally at every OnInit() (unlike StartupTickCount, which
+// only gets set when trades were already open). iBarShift()-based brick
+// counting needs the WHOLE bar history back to each trade's entry time to
+// be intact -- unlike the old price-only checks, it can be fooled by an
+// offline Renko chart that hasn't finished rebuilding yet right after a
+// restart, which this project has hit before in other contexts. During
+// this window, CheckVirtualSL()/CheckVirtualTP() fall back to the
+// informational price levels (vSL/vTP) instead of trusting brick counts.
+int      ChartSettleTickCount = 0;
+int      CHART_SETTLE_SECONDS = 120; // same duration as LOCKOUT_MINUTES, for consistency
+
 // Renko-reset manual-unlock gate (no open trades on attach): tracks when the
 // gate started waiting so it can auto-release after RenkoResetTimeoutSeconds
 // if the Renko Reset script isn't run in time -- see Gate 3 in OnTick().
@@ -558,11 +570,12 @@ void RestoreStateFromGlobalVariables()
 // +------------------------------------------------------------------+
 int OnInit()
 {
-   Print("=== ZEUS AI BUILD 2026-10-14 | RC + Jerk dual-agreement direction | AI temporarily OFF pending Jerk retrain ===");
+   Print("=== ZEUS AI BUILD 2026-11-15 | RC + Jerk dual-agreement direction | AI temporarily OFF pending Jerk retrain ===");
    lastBarTime          = 0;
    ReadyToTrade         = false;
    InitialRC_Direction  = 0;
    InitialJerk_Direction = 0;
+   ChartSettleTickCount = GetTickCount(); // unconditional -- covers every attach/restart, not just the "trades were open" case
    RestoreStateFromGlobalVariables();
    AI_RefBalanceFile = "ZeusAI_refbalance_" + IntegerToString(MagicNumber) + ".txt";
    AI_EquityFile     = "ZeusAI_equity_"     + IntegerToString(MagicNumber) + ".csv";
@@ -1274,8 +1287,16 @@ void CheckVirtualSL()
       int ticket = OrderTicket();
       bool hit = false;
 
-      if(BreakEvenTriggered)
+      if(BreakEvenTriggered || !ChartHasSettled())
       {
+         // Post-breakeven: the stop IS a fixed price, brick-counting never
+         // applies here regardless of settle state.
+         // Pre-breakeven but chart not yet settled: brick-counting depends
+         // on the WHOLE bar history back to entry being intact, which this
+         // project has seen NOT be true immediately after a restart -- fall
+         // back to the original, chart-integrity-independent price check
+         // using the informational vSL level until enough real time has
+         // passed to trust iBarShift()-based brick counts again.
          double vsl = VirtualGetSL(ticket);
          if(vsl == 0) continue;
          if(OrderType() == OP_BUY  && candleClose <= vsl) hit = true;
@@ -1329,6 +1350,11 @@ void CheckVirtualSL()
             Print("EA: VSL hit (breakeven price) - closed ticket=", ticket,
                   " CandleClose=", candleClose, " VSL=", VirtualGetSL(ticket));
          }
+         else if(!ChartHasSettled())
+         {
+            Print("EA: VSL hit (price fallback - chart not yet settled) - closed ticket=", ticket,
+                  " CandleClose=", candleClose, " VSL=", VirtualGetSL(ticket));
+         }
          else
          {
             int adverseType = (OrderType() == OP_BUY) ? OP_SELL : OP_BUY;
@@ -1350,6 +1376,16 @@ void CheckVirtualSL()
 
 // +------------------------------------------------------------------+
 // CheckVirtualTP - candle close only
+
+// True once enough real time has passed since this EA instance's own
+// OnInit() that the offline Renko chart's bar history can be trusted for
+// brick-count purposes. Measured off GetTickCount() (real elapsed time),
+// not broker quote time, same reasoning as the existing startup lockout.
+bool ChartHasSettled()
+{
+   return (int)(GetTickCount() - ChartSettleTickCount) >= CHART_SETTLE_SECONDS * 1000;
+}
+
 // Counts bricks closed since openTime that printed IN the trade's OWN
 // favorable direction only -- a bull brick for a buy, a bear brick for a
 // sell. A pullback/reversal brick against the position does not count,
@@ -1372,6 +1408,11 @@ int CountFavorableBricksSinceEntry(int orderType, datetime openTime)
 // +------------------------------------------------------------------+
 void CheckVirtualTP()
 {
+   // Same chart-settle guard as CheckVirtualSL(): brick-count TP needs the
+   // whole bar history back to entry intact, which can't be trusted
+   // immediately after a restart. Fall back to the informational price
+   // target (vTP) until ChartHasSettled().
+   double candleClose = Close[1];
    int qTickets[10];
    int qCount = 0;
 
@@ -1380,12 +1421,23 @@ void CheckVirtualTP()
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       if(OrderMagicNumber() != MagicNumber || OrderSymbol() != Symbol()) continue;
 
-      int ticket   = OrderTicket();
-      int tpBricks = VirtualGetTPBricks(ticket);
-      if(tpBricks == 0) continue; // runner leg, no TP
+      int ticket = OrderTicket();
+      bool hit = false;
 
-      int favorableBricks = CountFavorableBricksSinceEntry(OrderType(), OrderOpenTime());
-      bool hit = (favorableBricks >= tpBricks);
+      if(!ChartHasSettled())
+      {
+         double vtp = VirtualGetTP(ticket);
+         if(vtp == 0) continue;
+         if(OrderType() == OP_BUY  && candleClose >= vtp) hit = true;
+         if(OrderType() == OP_SELL && candleClose <= vtp) hit = true;
+      }
+      else
+      {
+         int tpBricks = VirtualGetTPBricks(ticket);
+         if(tpBricks == 0) continue; // runner leg, no TP
+         int favorableBricks = CountFavorableBricksSinceEntry(OrderType(), OrderOpenTime());
+         hit = (favorableBricks >= tpBricks);
+      }
 
       if(hit && qCount < 10)
       {
@@ -1409,16 +1461,22 @@ void CheckVirtualTP()
 
    for(int q = 0; q < qCount; q++)
    {
-      int ticket   = qTickets[q];
+      int ticket = qTickets[q];
       if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES)) continue;
-      int    tpBricks = VirtualGetTPBricks(ticket);
-      int    favorableBricks = CountFavorableBricksSinceEntry(OrderType(), OrderOpenTime());
       double cp = (OrderType() == OP_BUY) ? Bid : Ask;
       if(OrderClose(ticket, OrderLots(), cp, Slippage))
       {
-         Print("EA: VTP hit (favorable brick count) - closed ticket=", ticket,
-               " favorableBricksSinceEntry=", favorableBricks,
-               " target=", tpBricks, " closePrice=", cp);
+         if(!ChartHasSettled())
+         {
+            Print("EA: VTP hit (price fallback - chart not yet settled) - closed ticket=", ticket,
+                  " CandleClose=", candleClose, " VTP=", VirtualGetTP(ticket));
+         }
+         else
+         {
+            Print("EA: VTP hit (favorable brick count) - closed ticket=", ticket,
+                  " favorableBricksSinceEntry=", CountFavorableBricksSinceEntry(OrderType(), OrderOpenTime()),
+                  " target=", VirtualGetTPBricks(ticket), " closePrice=", cp);
+         }
          VirtualRemove(ticket);
          RemoveKnownTicket(ticket);
       }
