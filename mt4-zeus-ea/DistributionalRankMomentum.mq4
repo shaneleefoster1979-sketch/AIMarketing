@@ -89,6 +89,7 @@ input bool   UseEMAConfluence = true;
 input int    EMALength     = 30;
 input bool   EnableAlerts  = false;
 input bool   EnablePush    = false;
+input int    MaxBarsToProcess = 3000; // caps how far back this indicator ever computes -- this is a full-history recompute every tick (see OnCalculate), and a chart with a very deep history (hundreds of thousands of bars) will freeze MT4 on attach without this cap. A rank/momentum oscillator doesn't need 25 years of history anyway; raise this only if your hardware handles it and you actually need the extra lookback.
 
 double BufBull[], BufBear[], BufNeutral[], BufEMA[], BufBuyArrow[], BufSellArrow[], BufUpperLine[], BufLowerLine[];
 
@@ -141,19 +142,43 @@ int OnCalculate(const int rates_total,
 {
    int minBars = momLen + Lookback + EMALength + 10;
    if(rates_total < minBars) return(0);
-   int total = rates_total;
+   // Hard cap on how far back this ever computes -- see MaxBarsToProcess
+   // comment. Close[]/Open[] indexing (0 = newest) means this naturally
+   // covers "the newest `total` bars" with nothing further back touched.
+   int total = MathMin(rates_total, MaxBarsToProcess);
+
+   // Buffers bound via SetIndexBuffer are zero-initialized by the platform,
+   // not EMPTY_VALUE-initialized -- without this, bars beyond the cutoff
+   // would show a stray flat line at 0 instead of simply not being drawn.
+   // Only needs doing once ever: bars beyond `total` never change which
+   // bars they are from one tick to the next.
+   static bool blankedBeyondCutoff = false;
+   if(!blankedBeyondCutoff && rates_total > total)
+   {
+      for(int j = total; j < rates_total; j++)
+      {
+         BufBull[j] = EMPTY_VALUE; BufBear[j] = EMPTY_VALUE; BufNeutral[j] = EMPTY_VALUE;
+         BufEMA[j] = EMPTY_VALUE; BufBuyArrow[j] = EMPTY_VALUE; BufSellArrow[j] = EMPTY_VALUE;
+         BufUpperLine[j] = EMPTY_VALUE; BufLowerLine[j] = EMPTY_VALUE;
+      }
+      blankedBeyondCutoff = true;
+   }
 
    double pct = (uThreshold + lThreshold) / 2.0;
 
    // Pass 1: Momentum[i] = Close[i] - percentile_linear_interp(Close[i..i+momLen-1], pct)
    // Needs momLen closes ending at (and including) bar i.
+   // closeWindow is allocated ONCE outside the loop and reused (just
+   // overwritten) each iteration -- repeatedly calling ArrayResize() inside
+   // a per-bar loop was the other big cost that made attaching this freeze
+   // the terminal.
    double momentum[];
    ArrayResize(momentum, total);
+   double closeWindow[];
+   ArrayResize(closeWindow, momLen);
    for(int i = 0; i < total; i++)
    {
       if(i + momLen > total) { momentum[i] = EMPTY_VALUE; continue; }
-      double closeWindow[];
-      ArrayResize(closeWindow, momLen);
       for(int k = 0; k < momLen; k++) closeWindow[k] = Close[i + k];
       ArraySort(closeWindow); // ascending
       momentum[i] = Close[i] - PercentileLinearInterp(closeWindow, momLen, pct);
@@ -162,14 +187,15 @@ int OnCalculate(const int rates_total,
    // Pass 2: Score[i] -- rank of momentum[i] against the trailing Lookback-sized
    // window of momentum[i..i+Lookback-1], via 99 interpolated percentile levels
    // (1..99) checked against the current momentum value. Needs the full window
-   // of Lookback valid momentum values.
+   // of Lookback valid momentum values. windowAsc reused the same way as
+   // closeWindow above.
    double score[];
    ArrayResize(score, total);
+   double windowAsc[];
+   ArrayResize(windowAsc, Lookback);
    for(int i = 0; i < total; i++)
    {
       if(i + Lookback > total || momentum[i] == EMPTY_VALUE) { score[i] = EMPTY_VALUE; continue; }
-      double windowAsc[];
-      ArrayResize(windowAsc, Lookback);
       bool windowValid = true;
       for(int k = 0; k < Lookback; k++)
       {
