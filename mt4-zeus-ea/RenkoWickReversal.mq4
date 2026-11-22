@@ -1,18 +1,22 @@
 //+------------------------------------------------------------------+
 //| RenkoWickReversal.mq4                                            |
 //|                                                                  |
-//| Marks Renko bricks that wicked through the PREVIOUS brick's Close
-//| but still closed in their own direction:
+//| Marks Renko reversal bricks whose wick dipped back past the close
+//| of the opposite-direction brick immediately before them:
 //|
-//|  Buy signal  : brick is a buy brick (Close > Open) AND its Low
-//|                dipped below the previous brick's Close -- it wicked
-//|                down through where the prior brick ended, then
-//|                still closed bullish. Arrow plotted BELOW the brick.
+//|  Buy signal  : brick is a buy brick (Close > Open), the PREVIOUS
+//|                brick was a sell brick (Close < Open), AND this
+//|                brick's Low dipped below that previous sell brick's
+//|                Close. Arrow plotted BELOW the brick.
 //|
-//|  Sell signal : brick is a sell brick (Close < Open) AND its High
-//|                poked above the previous brick's Close -- it wicked
-//|                up through where the prior brick ended, then still
-//|                closed bearish. Arrow plotted ABOVE the brick.
+//|  Sell signal : brick is a sell brick (Close < Open), the PREVIOUS
+//|                brick was a buy brick (Close > Open), AND this
+//|                brick's High poked above that previous buy brick's
+//|                Close. Arrow plotted ABOVE the brick.
+//|
+//| In other words: this only ever fires on the first brick of a new
+//| direction (a reversal brick), when its wick overshoots back past
+//| where the prior, opposite-direction brick had closed.
 //|
 //| "Previous brick" = the immediately preceding bar (shift+1), whatever
 //| direction it closed. Meant for the same offline Renko chart this
@@ -46,7 +50,7 @@
 #property indicator_width2  2
 
 input int    BrickSizePoints   = 200;  // Renko brick size in points (20 pips on a 5-digit USDJPY feed) -- used only to scale the arrow offset
-input double ArrowOffsetFraction = 0.3; // Arrow distance from the brick's Low/High, as a fraction of one brick
+input double ArrowOffsetFraction = 1.0; // Arrow distance from the brick's Low/High, as a fraction of one brick
 input bool   EnableAlerts      = false;
 input bool   EnablePush        = false;
 
@@ -89,14 +93,16 @@ int OnCalculate(const int rates_total,
       BufBuyArrow[i]  = EMPTY_VALUE;
       BufSellArrow[i] = EMPTY_VALUE;
 
-      bool isBuyBrick  = close[i] > open[i];
-      bool isSellBrick = close[i] < open[i];
+      bool isBuyBrick      = close[i] > open[i];
+      bool isSellBrick     = close[i] < open[i];
+      bool prevWasBuyBrick  = close[i + 1] > open[i + 1];
+      bool prevWasSellBrick = close[i + 1] < open[i + 1];
       double prevClose = close[i + 1];
 
-      if(isBuyBrick && low[i] < prevClose)
+      if(isBuyBrick && prevWasSellBrick && low[i] < prevClose)
          BufBuyArrow[i] = low[i] - offset;
 
-      if(isSellBrick && high[i] > prevClose)
+      if(isSellBrick && prevWasBuyBrick && high[i] > prevClose)
          BufSellArrow[i] = high[i] + offset;
    }
    BufBuyArrow[0]  = EMPTY_VALUE; // shift 0 is still forming -- not evaluated, see header
