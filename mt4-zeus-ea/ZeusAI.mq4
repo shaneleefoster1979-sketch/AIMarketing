@@ -93,7 +93,9 @@ void LogTrades()
 // |   VIRTUAL SL/TP + PERSISTENT STATE (survives MT4 restart)        |
 // |                                                                  |
 // |   Entry: RC AND the Jerk Indicator must AGREE in sign,           |
-// |   confirmed by brick direction, on candle close.                 |
+// |   confirmed by brick direction, on candle close. If UseCCIFilter |
+// |   is on, that direction is also gated (not set) by CCI: a BUY    |
+// |   needs CCI < 0, a SELL needs CCI > 0.                           |
 // |                                                                  |
 // |   All SL, BE, and TP checks fire at candle close only.          |
 // |   RC exit signal fires every tick (direction change).            |
@@ -156,6 +158,8 @@ input int    Jerk_PriceData         = 1;    // confirmed via Jerk_Probe.mq4: mat
 input int    Jerk_LPD_Period        = 5;    // must match the real Jerk Indicator's LPD Period input -- changed from 32 to 5 after the period sweep showed 5 as the clear best performer (dev 69.5% WR, lockbox 71.9% WR, lockbox WR higher than dev)
 input int    Jerk_Buffer            = 5;    // confirmed buffer index -- the only colored (DeepSkyBlue) line
 input double Jerk_ClampMax          = 25.0; // raw value is clamped to +-this before use, matching the indicator's own fixed scale
+input bool   UseCCIFilter          = false; // Gate (not a direction source): blocks a BUY unless CCI < 0, blocks a SELL unless CCI > 0. RC+Jerk still set entryDir as before; this only permits/blocks it. Uses MT4's native built-in iCCI() -- same formula as MetaQuotes' stock CCI.mq4 (typical price, 0.015 constant), no custom indicator needed.
+input int    CCI_Period            = 14;    // standard CCI period
 input bool   AllowNewEntries       = true;  // Uncheck to pause entries after manual close
 input bool   TrustInitialDirection = false; // Set true on THIS attach only when you judge the current RC/Jerk direction is already valid (e.g. price resuming its main trend) -- skips waiting for RC or Jerk to flip away from their reading at attach before the first trade. Set back to false afterward; this is a one-time-per-attach manual call, not a standing setting.
 input bool   BypassRenkoResetGate   = false; // TESTER ONLY: skip the Renko-reset unlock handshake (leave false for live)
@@ -821,6 +825,26 @@ int Jerk_Dir(double jerk)
    if(jerk >  0) return  1; // Jerk above zero -> buy side
    if(jerk <  0) return -1; // Jerk below zero -> sell side
    return 0;
+}
+
+// GetCCI_Value(): native MT4 built-in CCI, typical price ((H+L+C)/3), same
+// formula as MetaQuotes' stock CCI.mq4 -- no custom indicator file needed.
+double GetCCI_Value(int shift)
+{
+   return iCCI(NULL, 0, CCI_Period, PRICE_TYPICAL, shift);
+}
+
+// CCI_AllowsDirection(): a GATE, not a direction source -- unlike Jerk_Dir(),
+// this never sets entryDir itself. RC+Jerk still decide BUY vs SELL; this
+// only vetoes it. Per the backtest request: CCI < 0 permits a BUY, CCI > 0
+// permits a SELL (the inverse of CCI's usual "overbought/oversold" reading --
+// intentional, testing the contrarian side). CCI == 0 permits neither.
+bool CCI_AllowsDirection(int dir, double cci)
+{
+   if(cci == EMPTY_VALUE) return false;
+   if(dir == 1)  return (cci < 0); // buy only permitted when CCI below zero
+   if(dir == -1) return (cci > 0); // sell only permitted when CCI above zero
+   return false;
 }
 
 // +------------------------------------------------------------------+
@@ -1909,11 +1933,14 @@ void OnTick()
          else if(dRcD > 0 && dJerkD > 0) dDir =  1;
       }
       else dDir = dRcD;
+      double dCCI    = UseCCIFilter ? GetCCI_Value(1) : 0.0;
+      bool   dCCIOk  = UseCCIFilter ? CCI_AllowsDirection(dDir, dCCI) : true;
       Print("ZEUS-ENTRY-STATE bar=", TimeToStr(Time[1], TIME_DATE|TIME_MINUTES),
             " rcDir=", dRcD, " brickDir=", dBr,
             " jerk=", (dJerk==EMPTY_VALUE?"EMPTY":DoubleToStr(dJerk,4)),
             " jerkDir=", dJerkD,
             " combinedDir=", dDir, " brickOK=", (dBr==dDir),
+            " cci=", (UseCCIFilter?DoubleToStr(dCCI,2):"off"), " cciOK=", dCCIOk,
             " ready=", ReadyToTrade, " waitCycle=", WaitingForNewCycle,
             " trades=", CountTrades(), " allowNew=", AllowNewEntries);
    }
@@ -1958,7 +1985,13 @@ void OnTick()
       bool dirOK   = (entryDir != 0);
       bool brickOK = (brickDir == entryDir);
 
-      if(dirOK && brickOK)
+      double cciEntry = UseCCIFilter ? GetCCI_Value(1) : 0.0;
+      bool   cciOK     = UseCCIFilter ? CCI_AllowsDirection(entryDir, cciEntry) : true;
+      if(UseCCIFilter)
+         Print("ZEUS-FILTER[CCI] bar=", TimeToStr(Time[1], TIME_DATE|TIME_MINUTES),
+               " entryDir=", entryDir, " cci=", DoubleToStr(cciEntry,2), " cciOK=", cciOK);
+
+      if(dirOK && brickOK && cciOK)
       {
          if(UseZeusAI)
          {
