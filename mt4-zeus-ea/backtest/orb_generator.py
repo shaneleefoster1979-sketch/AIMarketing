@@ -100,3 +100,83 @@ def compute_orb_bias(renko_df: pd.DataFrame, m1_df: pd.DataFrame, range_start_ho
 
     renko_sorted["orb_bias"] = bias_out
     return renko_sorted
+
+
+def compute_break_retest_signal(renko_df: pd.DataFrame, m1_df: pd.DataFrame, range_minutes: int = 15) -> pd.DataFrame:
+    """Break-and-retest variant, per request: a 15-minute opening range
+    (9:30-9:45 AM New York = 16:30-16:45 broker time), watched per day for:
+
+      1. A breakout brick that closes beyond the range (above range_high
+         for the buy side, below range_low for the sell side) -- arms
+         "waiting for retest" in that direction.
+      2. While armed, the first SUBSEQUENT brick whose wick comes back to
+         touch the broken level and whose CLOSE still ends up back beyond
+         it (for a buy: Low <= range_high and Close > range_high) fires a
+         single entry signal. Only one entry is ever fired per day -- once
+         it fires (or the day ends without one), that day is done; a new
+         day always starts back at step 1 with its own fresh range.
+
+    retest_entry: 0 normally, +1/-1 exactly on the one brick (if any) where
+    the entry fires that day. range_high/range_low (that day's range) are
+    carried on every row for reference/diagnostics -- NOT for SL placement;
+    the stop is the triggering brick's own Low/High (its own low for a
+    buy, high for a sell), read directly off that row by the backtest.
+    """
+    daily = compute_daily_opening_range(m1_df, range_minutes=range_minutes)
+    ranges_by_date = {
+        row.date: (row.range_high, row.range_low, row.range_known_at)
+        for row in daily.itertuples()
+    }
+
+    renko_sorted = renko_df.sort_values("timestamp", kind="stable").reset_index(drop=True)
+    n = len(renko_sorted)
+    retest_entry = [0] * n
+    range_high_out = [float("nan")] * n
+    range_low_out = [float("nan")] * n
+
+    current_date = None
+    phase = 0       # 0=watching for breakout, 1=armed waiting buy-retest, -1=armed waiting sell-retest
+    done_today = False
+    range_high = range_low = range_known_at = None
+
+    for i, row in enumerate(renko_sorted.itertuples()):
+        ts = row.timestamp
+        d = ts.date()
+        if d != current_date:
+            current_date = d
+            phase = 0
+            done_today = False
+            entry = ranges_by_date.get(d)
+            if entry is not None:
+                range_high, range_low, range_known_at = entry
+            else:
+                range_high = range_low = range_known_at = None
+
+        range_high_out[i] = range_high if range_high is not None else float("nan")
+        range_low_out[i] = range_low if range_low is not None else float("nan")
+
+        if range_known_at is not None and ts >= range_known_at and not done_today:
+            is_bull = row.close > row.open
+            is_bear = row.close < row.open
+
+            if phase == 0:
+                if row.close > range_high and is_bull:
+                    phase = 1
+                elif row.close < range_low and is_bear:
+                    phase = -1
+            elif phase == 1:
+                if row.low <= range_high and row.close > range_high:
+                    retest_entry[i] = 1
+                    done_today = True
+            elif phase == -1:
+                if row.high >= range_low and row.close < range_low:
+                    retest_entry[i] = -1
+                    done_today = True
+
+        if retest_entry[i] != 0:
+            done_today = True
+
+    renko_sorted["retest_entry"] = retest_entry
+    renko_sorted["range_high"] = range_high_out
+    renko_sorted["range_low"] = range_low_out
+    return renko_sorted
