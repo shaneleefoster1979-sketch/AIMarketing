@@ -180,3 +180,61 @@ def compute_break_retest_signal(renko_df: pd.DataFrame, m1_df: pd.DataFrame, ran
     renko_sorted["range_high"] = range_high_out
     renko_sorted["range_low"] = range_low_out
     return renko_sorted
+
+
+def compute_breakout_only_signal(renko_df: pd.DataFrame, m1_df: pd.DataFrame, range_minutes: int = 15) -> pd.DataFrame:
+    """Simplified variant, per request: the retest requirement removed --
+    the breakout brick itself (closes beyond the range, confirmed by its
+    own direction) fires the entry immediately, no waiting for a retest.
+    Still one entry per day max. SL this time IS the opposite side of the
+    range (range_low for a buy, range_high for a sell), per request.
+
+    breakout_entry: 0 normally, +1/-1 on the one brick (if any) where the
+    breakout fires that day. range_high/range_low carried on every row --
+    this time they ARE what the backtest uses for SL.
+    """
+    daily = compute_daily_opening_range(m1_df, range_minutes=range_minutes)
+    ranges_by_date = {
+        row.date: (row.range_high, row.range_low, row.range_known_at)
+        for row in daily.itertuples()
+    }
+
+    renko_sorted = renko_df.sort_values("timestamp", kind="stable").reset_index(drop=True)
+    n = len(renko_sorted)
+    breakout_entry = [0] * n
+    range_high_out = [float("nan")] * n
+    range_low_out = [float("nan")] * n
+
+    current_date = None
+    done_today = False
+    range_high = range_low = range_known_at = None
+
+    for i, row in enumerate(renko_sorted.itertuples()):
+        ts = row.timestamp
+        d = ts.date()
+        if d != current_date:
+            current_date = d
+            done_today = False
+            entry = ranges_by_date.get(d)
+            if entry is not None:
+                range_high, range_low, range_known_at = entry
+            else:
+                range_high = range_low = range_known_at = None
+
+        range_high_out[i] = range_high if range_high is not None else float("nan")
+        range_low_out[i] = range_low if range_low is not None else float("nan")
+
+        if range_known_at is not None and ts >= range_known_at and not done_today:
+            is_bull = row.close > row.open
+            is_bear = row.close < row.open
+            if row.close > range_high and is_bull:
+                breakout_entry[i] = 1
+                done_today = True
+            elif row.close < range_low and is_bear:
+                breakout_entry[i] = -1
+                done_today = True
+
+    renko_sorted["breakout_entry"] = breakout_entry
+    renko_sorted["range_high"] = range_high_out
+    renko_sorted["range_low"] = range_low_out
+    return renko_sorted
