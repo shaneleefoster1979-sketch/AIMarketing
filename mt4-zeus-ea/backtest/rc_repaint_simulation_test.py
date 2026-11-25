@@ -37,7 +37,7 @@ RAW_DIR = Path(__file__).parent / "data" / "raw"
 MULTI_PERIOD_FILE = RAW_DIR / "rc_history_multiperiod.csv"
 BASE_RC_PERIOD = 8  # the actual current live RC_Period setting
 JERK_CLAMP_MAX = 25.0
-FLIP_EVERY_N_BRICKS = 3
+FLIP_EVERY_N_BRICKS = 4
 
 
 def load_period_col(path, col, tz="UTC"):
@@ -116,7 +116,7 @@ renko = align_rc_period(renko, dump, BASE_RC_PERIOD)
 
 usable = renko.dropna(subset=["rc_value", "jerk_value", "cci_value"]).reset_index(drop=True)
 print(f"usable: {len(usable)} bricks\n")
-print("Injecting the repaint-flip artifact (every 3rd same-direction brick)...")
+print(f"Injecting the repaint-flip artifact (every {FLIP_EVERY_N_BRICKS}th same-direction brick)...")
 usable = inject_repaint_flips(usable)
 
 n = len(usable)
@@ -134,7 +134,7 @@ lb_t, lb_wr, lb_e = summarize(zb.run_zeus_backtest(lockbox, 1000.0, direction_fn
 print(f"  dev    : trades={dev_t} wr={dev_wr:.1f}% ending=${dev_e:,.2f}")
 print(f"  lockbox: trades={lb_t} wr={lb_wr:.1f}% ending=${lb_e:,.2f}")
 
-print(f"\n=== Simulated repaint: every 3rd same-direction brick flipped ===")
+print(f"\n=== Simulated repaint: every {FLIP_EVERY_N_BRICKS}th same-direction brick flipped ===")
 dev_t2, dev_wr2, dev_e2 = summarize(zb.run_zeus_backtest(dev, 1000.0, direction_fn=repainted_fn))
 lb_t2, lb_wr2, lb_e2 = summarize(zb.run_zeus_backtest(lockbox, 1000.0, direction_fn=repainted_fn))
 print(f"  dev    : trades={dev_t2} wr={dev_wr2:.1f}% ending=${dev_e2:,.2f}")
