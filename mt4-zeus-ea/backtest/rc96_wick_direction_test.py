@@ -37,6 +37,7 @@ def run_rc96_wick_backtest(df: pd.DataFrame, starting_balance: float, spread_pip
     t1_was_open = False
     breakeven_triggered = False
     trade_log: list[dict] = []
+    equity_curve: list[tuple] = [(None, equity)]  # (timestamp, equity) after every close
 
     for i in range(len(df)):
         if equity <= 0:
@@ -56,6 +57,7 @@ def run_rc96_wick_backtest(df: pd.DataFrame, starting_balance: float, spread_pip
                 pnl, record = zb._close_leg(leg, close, ts, "stop", spread_pips)
                 equity += pnl
                 trade_log.append(record)
+                equity_curve.append((ts, equity))
                 slots[idx] = None
 
         # 2. Break-even once T1 is gone
@@ -77,6 +79,7 @@ def run_rc96_wick_backtest(df: pd.DataFrame, starting_balance: float, spread_pip
                 pnl, record = zb._close_leg(leg, close, ts, "target", spread_pips)
                 equity += pnl
                 trade_log.append(record)
+                equity_curve.append((ts, equity))
                 slots[idx] = None
 
         # 4. Exit -- RC(96) flips to the opposite direction, brick-confirmed. No Jerk/CCI/RC8.
@@ -90,6 +93,7 @@ def run_rc96_wick_backtest(df: pd.DataFrame, starting_balance: float, spread_pip
                 pnl, record = zb._close_leg(leg, close, ts, "rc96_wick_exit", spread_pips)
                 equity += pnl
                 trade_log.append(record)
+                equity_curve.append((ts, equity))
                 slots[idx] = None
 
         if all(leg is None for leg in slots):
@@ -110,7 +114,7 @@ def run_rc96_wick_backtest(df: pd.DataFrame, starting_balance: float, spread_pip
             t1_was_open = True
             breakeven_triggered = False
 
-    return {"trade_log": trade_log, "ending_equity": equity}
+    return {"trade_log": trade_log, "ending_equity": equity, "equity_curve": equity_curve}
 
 
 def summarize(result: dict) -> tuple[int, float, float]:
@@ -118,6 +122,29 @@ def summarize(result: dict) -> tuple[int, float, float]:
     wins = sum(1 for t in tl if t["pnl"] > 0)
     wr = wins / len(tl) * 100 if tl else float("nan")
     return len(tl), wr, result["ending_equity"]
+
+
+def max_drawdown(equity_curve: list[tuple]) -> tuple[float, float, "pd.Timestamp", "pd.Timestamp"]:
+    """Returns (max_drawdown_pct, max_drawdown_dollars, peak_ts, trough_ts)
+    over the running peak-to-trough decline of the equity curve."""
+    peak = equity_curve[0][1]
+    peak_ts = equity_curve[0][0]
+    worst_pct = 0.0
+    worst_dollars = 0.0
+    worst_peak_ts = peak_ts
+    worst_trough_ts = peak_ts
+    for ts, eq in equity_curve:
+        if eq > peak:
+            peak = eq
+            peak_ts = ts
+        dd_dollars = peak - eq
+        dd_pct = (dd_dollars / peak * 100.0) if peak > 0 else 0.0
+        if dd_pct > worst_pct:
+            worst_pct = dd_pct
+            worst_dollars = dd_dollars
+            worst_peak_ts = peak_ts
+            worst_trough_ts = ts
+    return worst_pct, worst_dollars, worst_peak_ts, worst_trough_ts
 
 
 print("Loading the REAL offline Renko chart's OHLC history (true wicks)...")
@@ -138,7 +165,15 @@ lockbox = usable.iloc[split:].reset_index(drop=True)
 print(f"dev: {len(dev)} | lockbox: {len(lockbox)}\n")
 
 print(f"=== RC({RC_PERIOD}) + real brick direction ONLY -- no Jerk, no CCI, no RC(8) ===")
-dev_t, dev_wr, dev_e = summarize(run_rc96_wick_backtest(dev, 1000.0))
-lb_t, lb_wr, lb_e = summarize(run_rc96_wick_backtest(lockbox, 1000.0))
+dev_result = run_rc96_wick_backtest(dev, 1000.0)
+lb_result = run_rc96_wick_backtest(lockbox, 1000.0)
+dev_t, dev_wr, dev_e = summarize(dev_result)
+lb_t, lb_wr, lb_e = summarize(lb_result)
 print(f"  dev    : trades={dev_t} wr={dev_wr:.1f}% ending=${dev_e:,.2f}")
 print(f"  lockbox: trades={lb_t} wr={lb_wr:.1f}% ending=${lb_e:,.2f}")
+
+dev_dd_pct, dev_dd_dollars, dev_peak_ts, dev_trough_ts = max_drawdown(dev_result["equity_curve"])
+lb_dd_pct, lb_dd_dollars, lb_peak_ts, lb_trough_ts = max_drawdown(lb_result["equity_curve"])
+print(f"\nLargest drawdown (peak-to-trough decline in running equity):")
+print(f"  dev    : -{dev_dd_pct:.1f}% (-${dev_dd_dollars:,.2f}), peak at {dev_peak_ts}, trough at {dev_trough_ts}")
+print(f"  lockbox: -{lb_dd_pct:.1f}% (-${lb_dd_dollars:,.2f}), peak at {lb_peak_ts}, trough at {lb_trough_ts}")
