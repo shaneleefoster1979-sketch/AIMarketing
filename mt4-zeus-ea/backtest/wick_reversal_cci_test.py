@@ -132,26 +132,27 @@ def summarize(result):
     return len(tl), wr, result["ending_equity"]
 
 
-print("Building dataset (Renko + CCI only -- no RC, no Jerk)...")
-raw = load_time_series(RAW_DIR / "USDJPY_M1.csv")
-brick_size = BRICK_SIZE_PIPS * PIP_SIZE_USDJPY
-renko = generate_renko_bricks(raw, brick_size, decimals=DECIMALS)
-renko = compute_cci(renko)
-usable = compute_wick_reversal(renko)
-usable = usable.dropna(subset=["cci_value"]).reset_index(drop=True)
+if __name__ == "__main__":
+    print("Building dataset (Renko + CCI only -- no RC, no Jerk)...")
+    raw = load_time_series(RAW_DIR / "USDJPY_M1.csv")
+    brick_size = BRICK_SIZE_PIPS * PIP_SIZE_USDJPY
+    renko = generate_renko_bricks(raw, brick_size, decimals=DECIMALS)
+    renko = compute_cci(renko)
+    usable = compute_wick_reversal(renko)
+    usable = usable.dropna(subset=["cci_value"]).reset_index(drop=True)
 
-buy_signals = int((usable["wick_buy_arrow"] & (usable["cci_value"] < 0)).sum())
-sell_signals = int((usable["wick_sell_arrow"] & (usable["cci_value"] > 0)).sum())
-print(f"usable: {len(usable)} bricks, buy signals: {buy_signals}, sell signals: {sell_signals}\n")
+    buy_signals = int((usable["wick_buy_arrow"] & (usable["cci_value"] < 0)).sum())
+    sell_signals = int((usable["wick_sell_arrow"] & (usable["cci_value"] > 0)).sum())
+    print(f"usable: {len(usable)} bricks, buy signals: {buy_signals}, sell signals: {sell_signals}\n")
 
-n = len(usable)
-split = int(n * 0.85)
-dev = usable.iloc[:split].reset_index(drop=True)
-lockbox = usable.iloc[split:].reset_index(drop=True)
-print(f"dev: {len(dev)} | lockbox: {len(lockbox)}\n")
+    n = len(usable)
+    split = int(n * 0.85)
+    dev = usable.iloc[:split].reset_index(drop=True)
+    lockbox = usable.iloc[split:].reset_index(drop=True)
+    print(f"dev: {len(dev)} | lockbox: {len(lockbox)}\n")
 
-print("=== Renko Wick Reversal + CCI ONLY -- no RC, no Jerk ===")
-dev_t, dev_wr, dev_e = summarize(run_wick_cci_backtest(dev, 1000.0))
-lb_t, lb_wr, lb_e = summarize(run_wick_cci_backtest(lockbox, 1000.0))
-print(f"  dev    : trades={dev_t} wr={dev_wr:.1f}% ending=${dev_e:,.2f}")
-print(f"  lockbox: trades={lb_t} wr={lb_wr:.1f}% ending=${lb_e:,.2f}")
+    print("=== Renko Wick Reversal + CCI ONLY -- no RC, no Jerk ===")
+    dev_t, dev_wr, dev_e = summarize(run_wick_cci_backtest(dev, 1000.0))
+    lb_t, lb_wr, lb_e = summarize(run_wick_cci_backtest(lockbox, 1000.0))
+    print(f"  dev    : trades={dev_t} wr={dev_wr:.1f}% ending=${dev_e:,.2f}")
+    print(f"  lockbox: trades={lb_t} wr={lb_wr:.1f}% ending=${lb_e:,.2f}")
