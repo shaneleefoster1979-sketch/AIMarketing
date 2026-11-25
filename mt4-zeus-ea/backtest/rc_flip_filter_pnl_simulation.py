@@ -42,7 +42,7 @@ RAW_DIR = Path(__file__).parent / "data" / "raw"
 MULTI_PERIOD_FILE = RAW_DIR / "rc_history_multiperiod.csv"
 RC_PERIOD = 8
 JERK_CLAMP_MAX = 25.0
-FLIP_EVERY_N_BRICKS = 4
+FLIP_EVERY_N_BRICKS = 3
 TP_FAVORABLE_BRICKS = 3   # TP1 = 600 points / 200 points per brick
 SL_ADVERSE_BRICKS = 2     # SLBricksFromPoints(600) with BrickSizePoints=200
 MAX_FORWARD_BRICKS = 500  # give up and call it unresolved beyond this
@@ -98,10 +98,11 @@ for i in range(n):
 print(f"Flip-trigger events (every {FLIP_EVERY_N_BRICKS}th same-direction brick): {len(flip_events)}\n")
 
 
-def simulate_outcome(start_idx: int, wrong_dir: int) -> str:
+def simulate_outcome(start_idx: int, wrong_dir: int):
     """Walk forward from start_idx+1. favorable = bricks matching wrong_dir
     (the hypothetical trade's direction), adverse = bricks matching the
-    real original direction. Returns 'win', 'loss', or 'unresolved'."""
+    real original direction. Returns (outcome, exit_idx); exit_idx is None
+    for 'unresolved'."""
     favorable = 0
     adverse = 0
     end = min(n, start_idx + 1 + MAX_FORWARD_BRICKS)
@@ -109,49 +110,65 @@ def simulate_outcome(start_idx: int, wrong_dir: int) -> str:
         if brick_dir_arr[j] == wrong_dir:
             favorable += 1
             if favorable >= TP_FAVORABLE_BRICKS:
-                return "win"
+                return "win", j
         else:
             adverse += 1
             if adverse >= SL_ADVERSE_BRICKS:
-                return "loss"
-    return "unresolved"
+                return "loss", j
+    return "unresolved", None
 
 
-results = {
-    "blocked_by_jerk": {"win": 0, "loss": 0, "unresolved": 0},
-    "blocked_by_cci": {"win": 0, "loss": 0, "unresolved": 0},
-    "not_blocked": {"win": 0, "loss": 0, "unresolved": 0},
-}
+T1_WEIGHT = 20       # matches ZeusAI.mq4's T1_Weight -- these events mirror T1's exact 3-favorable/2-adverse thresholds
+SPREAD_PIPS = 1.0
+STARTING_BALANCE = 1000.0
 
+categorized = []  # (idx, wrong_dir, outcome, exit_idx, category) in chronological order
 for idx, wrong_dir, real_dir in flip_events:
-    outcome = simulate_outcome(idx, wrong_dir)
+    outcome, exit_idx = simulate_outcome(idx, wrong_dir)
 
-    jerk_agrees = (jerk_dir_arr[idx] == wrong_dir)
-    if not jerk_agrees:
-        results["blocked_by_jerk"][outcome] += 1
-        continue
+    if jerk_dir_arr[idx] != wrong_dir:
+        category = "blocked_by_jerk"
+    elif not cci_allows_direction(wrong_dir, cci_val_arr[idx]):
+        category = "blocked_by_cci"
+    else:
+        category = "not_blocked"
 
-    cci_agrees = cci_allows_direction(wrong_dir, cci_val_arr[idx])
-    if not cci_agrees:
-        results["blocked_by_cci"][outcome] += 1
-        continue
+    categorized.append((idx, wrong_dir, outcome, exit_idx, category))
 
-    results["not_blocked"][outcome] += 1
 
-print("=" * 78)
-total_losses_if_unfiltered = sum(r["loss"] for r in results.values())
-losses_prevented = results["blocked_by_jerk"]["loss"] + results["blocked_by_cci"]["loss"]
-wins_missed = results["blocked_by_jerk"]["win"] + results["blocked_by_cci"]["win"]
+def run_ledger(events, label):
+    """Sequential, compounding ledger (same convention as every other
+    backtest this session): processes events in chronological order,
+    sizes each with zb.get_lot_size off the CURRENT equity (T1's own
+    weight/risk%), skips 'unresolved' events (never closed, no pnl)."""
+    equity = STARTING_BALANCE
+    wins = 0
+    losses = 0
+    for idx, wrong_dir, outcome, exit_idx, _ in events:
+        if outcome == "unresolved":
+            continue
+        entry_price = close_arr[idx]
+        exit_price = close_arr[exit_idx]
+        lots = zb.get_lot_size(equity, T1_WEIGHT, entry_price)
+        pips = (exit_price - entry_price) * wrong_dir / zb.PIP_SIZE_USDJPY - SPREAD_PIPS
+        pnl = pips * zb.pip_value_per_lot(entry_price) * lots
+        equity += pnl
+        if outcome == "win":
+            wins += 1
+        else:
+            losses += 1
+    total = wins + losses
+    wr = wins / total * 100 if total else float("nan")
+    print(f"{label:34s}: trades={total:5d}  wr={wr:5.1f}%  ending=${equity:>18,.2f}")
+    return equity
 
-for category, r in results.items():
-    total = sum(r.values())
-    print(f"{category:16s}: total={total:5d}  win={r['win']:5d}  loss={r['loss']:5d}  unresolved={r['unresolved']:5d}")
 
+print("=" * 100)
+print("Sequential, compounding ledgers (same format as every other backtest this session) --")
+print(f"starting balance ${STARTING_BALANCE:,.0f}, T1 weight {T1_WEIGHT}%, {SPREAD_PIPS} pip spread:\n")
+
+run_ledger([e for e in categorized if e[4] == "blocked_by_jerk"], "Blocked by Jerk (never entered)")
+run_ledger([e for e in categorized if e[4] == "blocked_by_cci"],  "Blocked by CCI (never entered)")
+run_ledger([e for e in categorized if e[4] == "not_blocked"],     "Not blocked (ACTUALLY entered live)")
 print()
-print(f"Of all {len(flip_events)} flip events, {total_losses_if_unfiltered} would have been LOSING trades "
-      f"if entered on the flip alone (RC agreeing with itself, no Jerk/CCI check).")
-print(f"  -> Jerk and/or CCI PREVENTED {losses_prevented} of those losing entries "
-      f"({losses_prevented/total_losses_if_unfiltered*100:.1f}% of all would-be losses).")
-print(f"  -> Jerk and/or CCI also BLOCKED {wins_missed} entries that would actually have WON "
-      f"(missed opportunities, the cost of the filter).")
-print(f"  -> {results['not_blocked']['loss']} losing entries got through BOTH filters unprevented.")
+run_ledger(categorized, "ALL flip events, naive (no Jerk/CCI gate at all)")
