@@ -95,7 +95,9 @@ void LogTrades()
 // |   Entry: RC AND the Jerk Indicator must AGREE in sign,           |
 // |   confirmed by brick direction, on candle close. If UseCCIFilter |
 // |   is on, that direction is also gated (not set) by CCI: a BUY    |
-// |   needs CCI < 0, a SELL needs CCI > 0.                           |
+// |   needs CCI < 0, a SELL needs CCI > 0. If UseRC96Filter is on,   |
+// |   a second, slower RC reading at RC_SecondaryPeriod must ALSO    |
+// |   agree with that same direction before entry is permitted.     |
 // |                                                                  |
 // |   All SL, BE, and TP checks fire at candle close only.          |
 // |   RC exit signal fires every tick (direction change).            |
@@ -160,6 +162,8 @@ input int    Jerk_Buffer            = 5;    // confirmed buffer index -- the onl
 input double Jerk_ClampMax          = 25.0; // raw value is clamped to +-this before use, matching the indicator's own fixed scale
 input bool   UseCCIFilter          = true;  // Gate (not a direction source): blocks a BUY unless CCI < 0, blocks a SELL unless CCI > 0. RC+Jerk still set entryDir as before; this only permits/blocks it. Uses MT4's native built-in iCCI() -- same formula as MetaQuotes' stock CCI.mq4 (typical price, 0.015 constant), no custom indicator needed. Turned ON after a dev/lockbox backtest comparison showed it raising win rate on BOTH splits (dev 84.0%->88.8%, lockbox 74.5%->81.1%) -- see cci_gate_test.py in the backtest repo.
 input int    CCI_Period            = 14;    // standard CCI period
+input bool   UseRC96Filter         = true;  // Gate (not a direction source): require a SECOND, slower RC reading at RC_SecondaryPeriod to AGREE with the primary RC(RC_Period)+Jerk entry direction. A spurious single-brick RC repaint on the fast period is far less likely to also coincide with the slow period agreeing, so this targets the repaint problem directly, not just adds another independent opinion. Turned ON after a dev/lockbox backtest (rc8_rc96_jerk_cci_test.py) showed lockbox win rate climbing from 85.0% to 95.3% (at the cost of roughly 60% fewer trades and proportionally lower compounding) -- validated on only ~8.6 months of lockbox data, treat as promising, not proven.
+input int    RC_SecondaryPeriod    = 96;    // the slower RC period used for the UseRC96Filter confirmation -- the Range Cycle indicator's own default setting
 input bool   AllowNewEntries       = true;  // Uncheck to pause entries after manual close
 input bool   TrustInitialDirection = false; // Set true on THIS attach only when you judge the current RC/Jerk direction is already valid (e.g. price resuming its main trend) -- skips waiting for RC or Jerk to flip away from their reading at attach before the first trade. Set back to false afterward; this is a one-time-per-attach manual call, not a standing setting.
 input bool   BypassRenkoResetGate   = false; // TESTER ONLY: skip the Renko-reset unlock handshake (leave false for live)
@@ -771,6 +775,39 @@ double GetRC_BlueLine(int shift)
 double GetRC_MaroonLine(int shift)
 {
    return iCustom(NULL, 0, "Range Cycle Indicator", 0, 0, RC_Period, 2, shift);
+}
+
+// Same reads/combination logic as GetRC_Value(), but for an ARBITRARY RC
+// period -- used by UseRC96Filter to read RC_SecondaryPeriod without
+// touching the primary RC_Period the rest of the file uses. Always shift 1
+// (last fully closed brick), same reasoning as GetRC_Value().
+double GetRC_Value_ForPeriod(int period)
+{
+   double blue   = iCustom(NULL, 0, "Range Cycle Indicator", 0, 0, period, 1, 1);
+   double maroon = iCustom(NULL, 0, "Range Cycle Indicator", 0, 0, period, 2, 1);
+   bool   blueOn   = (blue   != EMPTY_VALUE && blue   != 0.0);
+   bool   maroonOn = (maroon != EMPTY_VALUE && maroon != 0.0);
+
+   if(blueOn && !maroonOn) return  MathAbs(blue);
+   if(maroonOn && !blueOn) return -MathAbs(maroon);
+   if(blueOn && maroonOn)
+   {
+      if(MathAbs(blue) >= MathAbs(maroon)) return  MathAbs(blue);
+      return -MathAbs(maroon);
+   }
+   return 0;
+}
+
+// RC96_AgreesWithDirection(): a GATE, not a direction source -- same
+// contract as CCI_AllowsDirection(). dir is the direction RC(RC_Period)+Jerk
+// already decided on; this only vetoes it if the slower RC reading
+// disagrees (or is itself neutral/undefined).
+bool RC96_AgreesWithDirection(int dir)
+{
+   if(dir == 0) return false;
+   double rc96 = GetRC_Value_ForPeriod(RC_SecondaryPeriod);
+   int rc96Dir = (rc96 > 0) ? 1 : (rc96 < 0) ? -1 : 0;
+   return (rc96Dir == dir);
 }
 
 // Direction of the just-closed brick (shift 1). Shift 0 on this chart is a
@@ -1935,12 +1972,14 @@ void OnTick()
       else dDir = dRcD;
       double dCCI    = UseCCIFilter ? GetCCI_Value(1) : 0.0;
       bool   dCCIOk  = UseCCIFilter ? CCI_AllowsDirection(dDir, dCCI) : true;
+      bool   dRC96Ok = UseRC96Filter ? RC96_AgreesWithDirection(dDir) : true;
       Print("ZEUS-ENTRY-STATE bar=", TimeToStr(Time[1], TIME_DATE|TIME_MINUTES),
             " rcDir=", dRcD, " brickDir=", dBr,
             " jerk=", (dJerk==EMPTY_VALUE?"EMPTY":DoubleToStr(dJerk,4)),
             " jerkDir=", dJerkD,
             " combinedDir=", dDir, " brickOK=", (dBr==dDir),
             " cci=", (UseCCIFilter?DoubleToStr(dCCI,2):"off"), " cciOK=", dCCIOk,
+            " rc96OK=", (UseRC96Filter?(string)dRC96Ok:"off"),
             " ready=", ReadyToTrade, " waitCycle=", WaitingForNewCycle,
             " trades=", CountTrades(), " allowNew=", AllowNewEntries);
    }
@@ -1991,7 +2030,12 @@ void OnTick()
          Print("ZEUS-FILTER[CCI] bar=", TimeToStr(Time[1], TIME_DATE|TIME_MINUTES),
                " entryDir=", entryDir, " cci=", DoubleToStr(cciEntry,2), " cciOK=", cciOK);
 
-      if(dirOK && brickOK && cciOK)
+      bool rc96OK = UseRC96Filter ? RC96_AgreesWithDirection(entryDir) : true;
+      if(UseRC96Filter)
+         Print("ZEUS-FILTER[RC96] bar=", TimeToStr(Time[1], TIME_DATE|TIME_MINUTES),
+               " entryDir=", entryDir, " rc96Period=", RC_SecondaryPeriod, " rc96OK=", rc96OK);
+
+      if(dirOK && brickOK && cciOK && rc96OK)
       {
          if(UseZeusAI)
          {
