@@ -42,7 +42,7 @@ RAW_DIR = Path(__file__).parent / "data" / "raw"
 MULTI_PERIOD_FILE = RAW_DIR / "rc_history_multiperiod.csv"
 RC_PERIOD = 8
 JERK_CLAMP_MAX = 25.0
-FLIP_EVERY_N_BRICKS = 3
+FLIP_EVERY_N_BRICKS = 4
 TP_FAVORABLE_BRICKS = 3   # TP1 = 600 points / 200 points per brick
 SL_ADVERSE_BRICKS = 2     # SLBricksFromPoints(600) with BrickSizePoints=200
 MAX_FORWARD_BRICKS = 500  # give up and call it unresolved beyond this
