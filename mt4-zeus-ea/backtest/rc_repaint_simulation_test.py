@@ -8,13 +8,9 @@ that specific repaint artifact on top of REAL RC data and reruns the
 current live EA rule (RC+Jerk dual-agreement, gated by CCI) to see the
 impact.
 
-No period=8 dump exists -- the sweep covered 96 down to 6 in steps of 10,
-and (per the earlier labeling mistake in RC_HistoryDump_MultiPeriod.mq4)
-8 itself was never captured either. Period=6 (the closest available) is
-used as the base here -- stated explicitly since it's a substitution, not
-the literal period asked for. A corrected dump script that actually
-captures period=8 exactly can be built on request if you want this
-re-run on the real thing instead of the nearest stand-in.
+Uses the real period=8 dump (re-run by the user with RC_Period8=8 set
+directly in RC_HistoryDump_MultiPeriod.mq4's input dialog, replacing the
+period=6 stand-in this script originally used).
 
 The flip rule: track consecutive same-direction Renko bricks (direction
 changes reset the run to 1). On every 3rd brick of a continuing run (the
@@ -39,7 +35,7 @@ import zeus_backtest as zb
 
 RAW_DIR = Path(__file__).parent / "data" / "raw"
 MULTI_PERIOD_FILE = RAW_DIR / "rc_history_multiperiod.csv"
-BASE_RC_PERIOD = 6  # closest available to the actual live setting, period 8 (not dumped -- see header)
+BASE_RC_PERIOD = 8  # the actual current live RC_Period setting
 JERK_CLAMP_MAX = 25.0
 FLIP_EVERY_N_BRICKS = 3
 
@@ -104,7 +100,7 @@ def summarize(result: dict) -> tuple[int, float, float]:
     return len(tl), wr, result["ending_equity"]
 
 
-print(f"Building dataset (RC period={BASE_RC_PERIOD}, closest available to the real live period 8)...")
+print(f"Building dataset (RC period={BASE_RC_PERIOD}, the real live setting)...")
 raw = load_time_series(RAW_DIR / "USDJPY_M1.csv")
 brick_size = BRICK_SIZE_PIPS * PIP_SIZE_USDJPY
 renko = generate_renko_bricks(raw, brick_size, decimals=DECIMALS)
